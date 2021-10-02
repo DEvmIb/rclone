@@ -2,8 +2,9 @@ package policy
 
 import (
 	"context"
-	"math"
-	
+	//"math"
+	"sort"
+	"strconv"
 	"github.com/rclone/rclone/backend/union/upstream"
 	"github.com/rclone/rclone/fs"
 )
@@ -30,23 +31,41 @@ func (p *M2Mfs) Create(ctx context.Context, upstreams []*upstream.Fs, path strin
 		return nil, fs.ErrorPermissionDenied
 	}
 
-	var minUsedSpace int64 = math.MaxInt64
-	var lusupstream *upstream.Fs
-
-	for _, u := range upstreams {
-		space, err := u.GetUsedSpace()
-		if err != nil {
-			fs.LogPrintf(fs.LogLevelNotice, nil,
-				"Used Space is not supported for upstream %s, treating as 0", u.Name())
-		}
-		if space < minUsedSpace {
-			minUsedSpace = space
-			lusupstream = u
-		}
+	// we need more upstreams 
+	if len(upstreams) < 2 {
+		return upstreams, nil
 	}
 
+	type Disk struct {
+		upstream	*upstream.Fs
+		free   int64
+	}
 
+	var mirrors []*Disk
+	var mirr []*upstream.Fs
+	
+	for _, u := range upstreams {
+		space, _ := u.GetFreeSpace()
+		var disk = new(Disk)
+		disk.upstream=u
+		disk.free=space
+		mirrors=append(mirrors,disk)
+	}
 
-	u, err := p.mfs(upstreams)
-	return []*upstream.Fs{u}, err
+	sort.Slice(mirrors, func(i, j int) bool {
+		return mirrors[i].free > mirrors[j].free
+	})
+
+	for _, d := range mirrors {
+		fs.LogPrintf(fs.LogLevelNotice, nil,"%s %s",strconv.FormatInt(d.free,10),d.upstream.Fs)
+	}
+	
+	mirr=append(mirr,mirrors[0].upstream)
+	mirr=append(mirr,mirrors[1].upstream)
+
+	if len(mirr) == 0 {
+		return nil, fs.ErrorObjectNotFound
+	}
+
+	return mirr, nil
 }

@@ -2,7 +2,6 @@ package policy
 
 import (
 	"context"
-	//"math"
 	"sort"
 	"strconv"
 	"github.com/rclone/rclone/backend/union/upstream"
@@ -56,9 +55,9 @@ func (p *M2Mfs) Create(ctx context.Context, upstreams []*upstream.Fs, path strin
 		return mirrors[i].free > mirrors[j].free
 	})
 
-	for _, d := range mirrors {
-		fs.LogPrintf(fs.LogLevelNotice, nil,"%s %s",strconv.FormatInt(d.free,10),d.upstream.Fs)
-	}
+	//for _, d := range mirrors {
+	//	fs.LogPrintf(fs.LogLevelNotice, nil,"%s %s",strconv.FormatInt(d.free,10),d.upstream.Fs)
+	//}
 	
 	mirr=append(mirr,mirrors[0].upstream)
 	mirr=append(mirr,mirrors[1].upstream)

@@ -86,7 +86,7 @@ func init() {
 			Advanced: true,
 		}, {
 			Name:     "trashed_only",
-			Help:     "Only show files that are in the trash.\nThis will show trashed files in their original directory structure.",
+			Help:     "Only show files that are in the trash.\n\nThis will show trashed files in their original directory structure.",
 			Default:  false,
 			Advanced: true,
 		}, {
@@ -122,15 +122,15 @@ func init() {
 func Config(ctx context.Context, name string, m configmap.Mapper, config fs.ConfigIn) (*fs.ConfigOut, error) {
 	switch config.State {
 	case "":
-		return fs.ConfigChooseFixed("auth_type_done", "config_type", `Authentication type`, []fs.OptionExample{{
+		return fs.ConfigChooseFixed("auth_type_done", "config_type", `Authentication type.`, []fs.OptionExample{{
 			Value: "standard",
-			Help:  "Standard authentication - use this if you're a normal Jottacloud user.",
+			Help:  "Standard authentication.\nUse this if you're a normal Jottacloud user.",
 		}, {
 			Value: "legacy",
-			Help:  "Legacy authentication - this is only required for certain whitelabel versions of Jottacloud and not recommended for normal users.",
+			Help:  "Legacy authentication.\nThis is only required for certain whitelabel versions of Jottacloud and not recommended for normal users.",
 		}, {
 			Value: "telia",
-			Help:  "Telia Cloud authentication - use this if you are using Telia Cloud.",
+			Help:  "Telia Cloud authentication.\nUse this if you are using Telia Cloud.",
 		}})
 	case "auth_type_done":
 		// Jump to next state according to config chosen
@@ -599,7 +599,9 @@ func (f *Fs) readMetaDataForPath(ctx context.Context, path string) (info *api.Jo
 	if err != nil {
 		return nil, errors.Wrap(err, "read metadata failed")
 	}
-	if result.XMLName.Local != "file" {
+	if result.XMLName.Local == "folder" {
+		return nil, fs.ErrorIsDir
+	} else if result.XMLName.Local != "file" {
 		return nil, fs.ErrorNotAFile
 	}
 	return &result, nil
@@ -762,7 +764,7 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 	// Renew the token in the background
 	f.tokenRenewer = oauthutil.NewRenew(f.String(), ts, func() error {
 		_, err := f.readMetaDataForPath(ctx, "")
-		if err == fs.ErrorNotAFile {
+		if err == fs.ErrorNotAFile || err == fs.ErrorIsDir {
 			err = nil
 		}
 		return err
@@ -784,7 +786,7 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		}
 		_, err := f.NewObject(context.TODO(), remote)
 		if err != nil {
-			if errors.Cause(err) == fs.ErrorObjectNotFound || errors.Cause(err) == fs.ErrorNotAFile {
+			if uErr := errors.Cause(err); uErr == fs.ErrorObjectNotFound || uErr == fs.ErrorNotAFile || uErr == fs.ErrorIsDir {
 				// File doesn't exist so return old f
 				f.root = root
 				return f, nil
@@ -1259,15 +1261,23 @@ func (f *Fs) PublicLink(ctx context.Context, remote string, expire fs.Duration, 
 		return "", errors.Wrap(err, "couldn't create public link")
 	}
 	if unlink {
-		if result.PublicSharePath != "" {
-			return "", errors.Errorf("couldn't remove public link - %q", result.PublicSharePath)
+		if result.PublicURI != "" {
+			return "", errors.Errorf("couldn't remove public link - %q", result.PublicURI)
 		}
 		return "", nil
 	}
-	if result.PublicSharePath == "" {
-		return "", errors.New("couldn't create public link - no link path received")
+	if result.PublicURI == "" {
+		return "", errors.New("couldn't create public link - no uri received")
 	}
-	return joinPath(baseURL, result.PublicSharePath), nil
+	if result.PublicSharePath != "" {
+		webLink := joinPath(baseURL, result.PublicSharePath)
+		fs.Debugf(nil, "Web link: %s", webLink)
+	} else {
+		fs.Debugf(nil, "No web link received")
+	}
+	directLink := joinPath(baseURL, fmt.Sprintf("opin/io/downloadPublic/%s/%s", f.user, result.PublicURI))
+	fs.Debugf(nil, "Direct link: %s", directLink)
+	return directLink, nil
 }
 
 // About gets quota information
@@ -1285,6 +1295,21 @@ func (f *Fs) About(ctx context.Context) (*fs.Usage, error) {
 		usage.Free = fs.NewUsageValue(info.Capacity - info.Usage)
 	}
 	return usage, nil
+}
+
+// UserInfo fetches info about the current user
+func (f *Fs) UserInfo(ctx context.Context) (userInfo map[string]string, err error) {
+	cust, err := getCustomerInfo(ctx, f.apiSrv)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]string{
+		"Username":         cust.Username,
+		"Email":            cust.Email,
+		"Name":             cust.Name,
+		"AccountType":      cust.AccountType,
+		"SubscriptionType": cust.SubscriptionType,
+	}, nil
 }
 
 // CleanUp empties the trash
@@ -1692,6 +1717,7 @@ var (
 	_ fs.ListRer      = (*Fs)(nil)
 	_ fs.PublicLinker = (*Fs)(nil)
 	_ fs.Abouter      = (*Fs)(nil)
+	_ fs.UserInfoer   = (*Fs)(nil)
 	_ fs.CleanUpper   = (*Fs)(nil)
 	_ fs.Object       = (*Object)(nil)
 	_ fs.MimeTyper    = (*Object)(nil)

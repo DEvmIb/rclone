@@ -59,7 +59,7 @@ based on XSalsa20 cipher and Poly1305 for integrity.
 by default, but this has some implications and is therefore
 possible to turned off.
 
-### Configuration
+## Configuration
 
 Here is an example of how to make a remote called `secret`.
 
@@ -109,12 +109,14 @@ Enter a string value. Press Enter for the default ("").
 remote> remote:path
 How to encrypt the filenames.
 Enter a string value. Press Enter for the default ("standard").
-Choose a number from below, or type in your own value
- 1 / Encrypt the filenames. See the docs for the details.
+Choose a number from below, or type in your own value.
+   / Encrypt the filenames.
+ 1 | See the docs for the details.
    \ "standard"
  2 / Very simple filename obfuscation.
    \ "obfuscate"
- 3 / Don't encrypt the file names.  Adds a ".bin" extension only.
+   / Don't encrypt the file names.
+ 3 | Adds a ".bin" extension only.
    \ "off"
 filename_encryption>
 Option to either encrypt directory names or leave them intact.

@@ -2,6 +2,8 @@ module github.com/rclone/rclone
 
 go 1.14
 
+replace github.com/jlaffaye/ftp => github.com/rclone/ftp v1.0.0-210902f
+
 require (
 	bazil.org/fuse v0.0.0-20200524192727-fb710f7dfd05
 	cloud.google.com/go v0.93.3 // indirect
@@ -25,7 +27,7 @@ require (
 	github.com/coreos/go-systemd v0.0.0-20191104093116-d3cd4ed1dbcf
 	github.com/cpuguy83/go-md2man/v2 v2.0.1 // indirect
 	github.com/dop251/scsu v0.0.0-20200422003335-8fadfb689669
-	github.com/dropbox/dropbox-sdk-go-unofficial v1.0.1-0.20210114204226-41fdcdae8a53
+	github.com/dropbox/dropbox-sdk-go-unofficial/v6 v6.0.3
 	github.com/form3tech-oss/jwt-go v3.2.5+incompatible // indirect
 	github.com/gabriel-vasile/mimetype v1.3.1
 	github.com/go-chi/chi/v5 v5.0.3
@@ -45,7 +47,7 @@ require (
 	github.com/mattn/go-runewidth v0.0.13
 	github.com/mitchellh/go-homedir v1.1.0
 	github.com/ncw/go-acd v0.0.0-20201019170801-fe55f33415b1
-	github.com/ncw/swift/v2 v2.0.0
+	github.com/ncw/swift/v2 v2.0.1
 	github.com/nsf/termbox-go v1.1.1
 	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/pkg/errors v0.9.1

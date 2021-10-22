@@ -44,6 +44,7 @@ See the following for detailed instructions for
   * [Google Cloud Storage](/googlecloudstorage/)
   * [Google Drive](/drive/)
   * [Google Photos](/googlephotos/)
+  * [Hasher](/hasher/) - to handle checksums for other remotes
   * [HDFS](/hdfs/)
   * [HTTP](/http/)
   * [Hubic](/hubic/)
@@ -62,6 +63,7 @@ See the following for detailed instructions for
   * [QingStor](/qingstor/)
   * [Seafile](/seafile/)
   * [SFTP](/sftp/)
+  * [Sia](/sia/)
   * [SugarSync](/sugarsync/)
   * [Tardigrade](/tardigrade/)
   * [Union](/union/)
@@ -595,6 +597,23 @@ Set to `0` to disable the buffering for the minimum memory usage.
 
 Note that the memory allocation of the buffers is influenced by the
 [--use-mmap](#use-mmap) flag.
+
+### --cache-dir=DIR ###
+
+Specify the directory rclone will use for caching, to override
+the default.
+
+Default value is depending on operating system:
+- Windows `%LocalAppData%\rclone`, if `LocalAppData` is defined.
+- macOS `$HOME/Library/Caches/rclone` if `HOME` is defined.
+- Unix `$XDG_CACHE_HOME/rclone` if `XDG_CACHE_HOME` is defined, else `$HOME/.cache/rclone` if `HOME` is defined.
+- Fallback (on all OS) to `$TMPDIR/rclone`, where `TMPDIR` is the value from [--temp-dir](#temp-dir-dir).
+
+You can use the [config paths](/commands/rclone_config_paths/)
+command to see the current value.
+
+Cache directory is heavily used by the [VFS File Caching](/commands/rclone_mount/#vfs-file-caching)
+mount feature, but also by [serve](/commands/rclone_serve/), [GUI](/gui) and other parts of rclone.
 
 ### --check-first ###
 
@@ -1553,6 +1572,22 @@ This can be useful for running rclone in a script or `rclone mount`.
 If using `--syslog` this sets the syslog facility (e.g. `KERN`, `USER`).
 See `man syslog` for a list of possible facilities.  The default
 facility is `DAEMON`.
+
+### --temp-dir=DIR ###
+
+Specify the directory rclone will use for temporary files, to override
+the default. Make sure the directory exists and have accessible permissions.
+
+By default the operating system's temp directory will be used:
+- On Unix systems, `$TMPDIR` if non-empty, else `/tmp`.
+- On Windows, the first non-empty value from `%TMP%`, `%TEMP%`, `%USERPROFILE%`, or the Windows directory.
+
+When overriding the default with this option, the specified path will be
+set as value of environment variable `TMPDIR` on Unix systems
+and `TMP` and `TEMP` on Windows.
+
+You can use the [config paths](/commands/rclone_config_paths/)
+command to see the current value.
 
 ### --tpslimit float ###
 

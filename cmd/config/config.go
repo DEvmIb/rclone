@@ -23,6 +23,7 @@ func init() {
 	configCommand.AddCommand(configEditCommand)
 	configCommand.AddCommand(configFileCommand)
 	configCommand.AddCommand(configTouchCommand)
+	configCommand.AddCommand(configPathsCommand)
 	configCommand.AddCommand(configShowCommand)
 	configCommand.AddCommand(configDumpCommand)
 	configCommand.AddCommand(configProvidersCommand)
@@ -70,6 +71,17 @@ var configTouchCommand = &cobra.Command{
 	Run: func(command *cobra.Command, args []string) {
 		cmd.CheckArgs(0, 0, command, args)
 		config.SaveConfig()
+	},
+}
+
+var configPathsCommand = &cobra.Command{
+	Use:   "paths",
+	Short: `Show paths used for configuration, cache, temp etc.`,
+	Run: func(command *cobra.Command, args []string) {
+		cmd.CheckArgs(0, 0, command, args)
+		fmt.Printf("Config file: %s\n", config.GetConfigPath())
+		fmt.Printf("Cache dir:   %s\n", config.GetCacheDir())
+		fmt.Printf("Temp dir:    %s\n", os.TempDir())
 	},
 }
 
@@ -248,13 +260,13 @@ func doConfig(name string, in rc.Params, do func(config.UpdateRemoteOpt) (*fs.Co
 
 func init() {
 	for _, cmdFlags := range []*pflag.FlagSet{configCreateCommand.Flags(), configUpdateCommand.Flags()} {
-		flags.BoolVarP(cmdFlags, &updateRemoteOpt.Obscure, "obscure", "", false, "Force any passwords to be obscured.")
-		flags.BoolVarP(cmdFlags, &updateRemoteOpt.NoObscure, "no-obscure", "", false, "Force any passwords not to be obscured.")
-		flags.BoolVarP(cmdFlags, &updateRemoteOpt.NonInteractive, "non-interactive", "", false, "Don't interact with user and return questions.")
-		flags.BoolVarP(cmdFlags, &updateRemoteOpt.Continue, "continue", "", false, "Continue the configuration process with an answer.")
-		flags.BoolVarP(cmdFlags, &updateRemoteOpt.All, "all", "", false, "Ask the full set of config questions.")
-		flags.StringVarP(cmdFlags, &updateRemoteOpt.State, "state", "", "", "State - use with --continue.")
-		flags.StringVarP(cmdFlags, &updateRemoteOpt.Result, "result", "", "", "Result - use with --continue.")
+		flags.BoolVarP(cmdFlags, &updateRemoteOpt.Obscure, "obscure", "", false, "Force any passwords to be obscured")
+		flags.BoolVarP(cmdFlags, &updateRemoteOpt.NoObscure, "no-obscure", "", false, "Force any passwords not to be obscured")
+		flags.BoolVarP(cmdFlags, &updateRemoteOpt.NonInteractive, "non-interactive", "", false, "Don't interact with user and return questions")
+		flags.BoolVarP(cmdFlags, &updateRemoteOpt.Continue, "continue", "", false, "Continue the configuration process with an answer")
+		flags.BoolVarP(cmdFlags, &updateRemoteOpt.All, "all", "", false, "Ask the full set of config questions")
+		flags.StringVarP(cmdFlags, &updateRemoteOpt.State, "state", "", "", "State - use with --continue")
+		flags.StringVarP(cmdFlags, &updateRemoteOpt.Result, "result", "", "", "Result - use with --continue")
 	}
 }
 

@@ -491,14 +491,14 @@ func Run(t *testing.T, opt *Opt) {
 		assert.True(t, len(fsInfo.CommandHelp) > 0, "Command is declared, must return some help in CommandHelp")
 	})
 
-	// TestFsRmdirNotFound tests deleting a non existent directory
+	// TestFsRmdirNotFound tests deleting a non-existent directory
 	t.Run("FsRmdirNotFound", func(t *testing.T) {
 		skipIfNotOk(t)
 		if isBucketBasedButNotRoot(f) {
-			t.Skip("Skipping test as non root bucket based remote")
+			t.Skip("Skipping test as non root bucket-based remote")
 		}
 		err := f.Rmdir(ctx, "")
-		assert.Error(t, err, "Expecting error on Rmdir non existent")
+		assert.Error(t, err, "Expecting error on Rmdir non-existent")
 	})
 
 	// Make the directory
@@ -658,6 +658,7 @@ func Run(t *testing.T, opt *Opt) {
 				{"trailing VT", "trailing VT\v"},
 				{"trailing dot", "trailing dot."},
 				{"invalid UTF-8", "invalid utf-8\xfe"},
+				{"URL encoding", "test%46.txt"},
 			} {
 				t.Run(test.name, func(t *testing.T) {
 					if opt.SkipInvalidUTF8 && test.name == "invalid UTF-8" {
@@ -1257,7 +1258,7 @@ func Run(t *testing.T, opt *Opt) {
 			t.Run("FsRmdirFull", func(t *testing.T) {
 				skipIfNotOk(t)
 				if isBucketBasedButNotRoot(f) {
-					t.Skip("Skipping test as non root bucket based remote")
+					t.Skip("Skipping test as non root bucket-based remote")
 				}
 				err := f.Rmdir(ctx, "")
 				require.Error(t, err, "Expecting error on RMdir on non empty remote")
@@ -1958,7 +1959,7 @@ func Run(t *testing.T, opt *Opt) {
 		purged = true
 		fstest.CheckListing(t, f, []fstest.Item{})
 
-		// Check purging again if not bucket based
+		// Check purging again if not bucket-based
 		if !isBucketBasedButNotRoot(f) {
 			err = operations.Purge(ctx, f, "")
 			assert.Error(t, err, "Expecting error after on second purge")

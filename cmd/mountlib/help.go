@@ -65,7 +65,7 @@ at all, then 1 PiB is set as both the total and the free size.
 To run rclone @ on Windows, you will need to
 download and install [WinFsp](http://www.secfs.net/winfsp/).
 
-[WinFsp](https://github.com/billziss-gh/winfsp) is an open source
+[WinFsp](https://github.com/billziss-gh/winfsp) is an open-source
 Windows File System Proxy which makes it easy to write user space file
 systems for Windows.  It provides a FUSE emulation layer which rclone
 uses combination with [cgofuse](https://github.com/billziss-gh/cgofuse).
@@ -158,11 +158,16 @@ By default, the owner and group will be taken from the current user, and the bui
 group "Everyone" will be used to represent others. The user/group can be customized
 with FUSE options "UserName" and "GroupName",
 e.g. |-o UserName=user123 -o GroupName="Authenticated Users"|.
+The permissions on each entry will be set according to [options](#options)
+|--dir-perms| and |--file-perms|, which takes a value in traditional
+[numeric notation](https://en.wikipedia.org/wiki/File-system_permissions#Numeric_notation).
 
-The permissions on each entry will be set according to
-[options](#options) |--dir-perms| and |--file-perms|,
-which takes a value in traditional [numeric notation](https://en.wikipedia.org/wiki/File-system_permissions#Numeric_notation),
-where the default corresponds to |--file-perms 0666 --dir-perms 0777|.
+The default permissions corresponds to |--file-perms 0666 --dir-perms 0777|,
+i.e. read and write permissions to everyone. This means you will not be able
+to start any programs from the the mount. To be able to do that you must add
+execute permissions, e.g. |--file-perms 0777 --dir-perms 0777| to add it
+to everyone. If the program needs to write files, chances are you will have
+to enable [VFS File Caching](#vfs-file-caching) as well (see also [limitations](#limitations)).
 
 Note that the mapping of permissions is not always trivial, and the result
 you see in Windows Explorer may not be exactly like you expected.
@@ -230,7 +235,7 @@ applications won't work with their files on an rclone mount without
 |--vfs-cache-mode writes| or |--vfs-cache-mode full|.
 See the [VFS File Caching](#vfs-file-caching) section for more info.
 
-The bucket based remotes (e.g. Swift, S3, Google Compute Storage, B2,
+The bucket-based remotes (e.g. Swift, S3, Google Compute Storage, B2,
 Hubic) do not support the concept of empty directories, so empty
 directories will have a tendency to disappear once they fall out of
 the directory cache.

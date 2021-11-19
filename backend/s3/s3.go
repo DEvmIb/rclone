@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -33,7 +34,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/ncw/swift/v2"
-	"github.com/pkg/errors"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config"
 	"github.com/rclone/rclone/fs/config/configmap"
@@ -58,7 +58,7 @@ import (
 func init() {
 	fs.Register(&fs.RegInfo{
 		Name:        "s3",
-		Description: "Amazon S3 Compliant Storage Providers including AWS, Alibaba, Ceph, Digital Ocean, Dreamhost, IBM COS, Minio, SeaweedFS, and Tencent COS",
+		Description: "Amazon S3 Compliant Storage Providers including AWS, Alibaba, Ceph, Digital Ocean, Dreamhost, IBM COS, Minio, RackCorp, SeaweedFS, and Tencent COS",
 		NewFs:       NewFs,
 		CommandHelp: commandHelp,
 		Options: []fs.Option{{
@@ -90,6 +90,9 @@ func init() {
 			}, {
 				Value: "Netease",
 				Help:  "Netease Object Storage (NOS)",
+			}, {
+				Value: "RackCorp",
+				Help:  "RackCorp Object Storage",
 			}, {
 				Value: "Scaleway",
 				Help:  "Scaleway Object Storage",
@@ -211,6 +214,68 @@ func init() {
 			}},
 		}, {
 			Name:     "region",
+			Help:     "region - the location where your bucket will be created and your data stored.\n",
+			Provider: "RackCorp",
+			Examples: []fs.OptionExample{{
+				Value: "global",
+				Help:  "Global CDN (All locations) Region",
+			}, {
+				Value: "au",
+				Help:  "Australia (All states)",
+			}, {
+				Value: "au-nsw",
+				Help:  "NSW (Australia) Region",
+			}, {
+				Value: "au-qld",
+				Help:  "QLD (Australia) Region",
+			}, {
+				Value: "au-vic",
+				Help:  "VIC (Australia) Region",
+			}, {
+				Value: "au-wa",
+				Help:  "Perth (Australia) Region",
+			}, {
+				Value: "ph",
+				Help:  "Manila (Philippines) Region",
+			}, {
+				Value: "th",
+				Help:  "Bangkok (Thailand) Region",
+			}, {
+				Value: "hk",
+				Help:  "HK (Hong Kong) Region",
+			}, {
+				Value: "mn",
+				Help:  "Ulaanbaatar (Mongolia) Region",
+			}, {
+				Value: "kg",
+				Help:  "Bishkek (Kyrgyzstan) Region",
+			}, {
+				Value: "id",
+				Help:  "Jakarta (Indonesia) Region",
+			}, {
+				Value: "jp",
+				Help:  "Tokyo (Japan) Region",
+			}, {
+				Value: "sg",
+				Help:  "SG (Singapore) Region",
+			}, {
+				Value: "de",
+				Help:  "Frankfurt (Germany) Region",
+			}, {
+				Value: "us",
+				Help:  "USA (AnyCast) Region",
+			}, {
+				Value: "us-east-1",
+				Help:  "New York (USA) Region",
+			}, {
+				Value: "us-west-1",
+				Help:  "Freemont (USA) Region",
+			}, {
+				Value: "nz",
+				Help:  "Auckland (New Zealand) Region",
+			}},
+		}, {
+			Name:     "region",
 			Help:     "Region to connect to.",
 			Provider: "Scaleway",
 			Examples: []fs.OptionExample{{
@@ -223,7 +288,7 @@ func init() {
 		}, {
 			Name:     "region",
 			Help:     "Region to connect to.\n\nLeave blank if you are using an S3 clone and you don't have a region.",
-			Provider: "!AWS,Alibaba,Scaleway,TencentCOS",
+			Provider: "!AWS,Alibaba,RackCorp,Scaleway,TencentCOS",
 			Examples: []fs.OptionExample{{
 				Value: "",
 				Help:  "Use this if unsure.\nWill use v4 signatures and an empty region.",
@@ -596,9 +661,72 @@ func init() {
 				Help:  "Use Tencent COS Accelerate Endpoint",
 			}},
 		}, {
+			// RackCorp endpoints: https://www.rackcorp.com/storage/s3storage
+			Name:     "endpoint",
+			Help:     "Endpoint for RackCorp Object Storage.",
+			Provider: "RackCorp",
+			Examples: []fs.OptionExample{{
+				Value: "s3.rackcorp.com",
+				Help:  "Global (AnyCast) Endpoint",
+			}, {
+				Value: "au.s3.rackcorp.com",
+				Help:  "Australia (Anycast) Endpoint",
+			}, {
+				Value: "au-nsw.s3.rackcorp.com",
+				Help:  "Sydney (Australia) Endpoint",
+			}, {
+				Value: "au-qld.s3.rackcorp.com",
+				Help:  "Brisbane (Australia) Endpoint",
+			}, {
+				Value: "au-vic.s3.rackcorp.com",
+				Help:  "Melbourne (Australia) Endpoint",
+			}, {
+				Value: "au-wa.s3.rackcorp.com",
+				Help:  "Perth (Australia) Endpoint",
+			}, {
+				Value: "ph.s3.rackcorp.com",
+				Help:  "Manila (Philippines) Endpoint",
+			}, {
+				Value: "th.s3.rackcorp.com",
+				Help:  "Bangkok (Thailand) Endpoint",
+			}, {
+				Value: "hk.s3.rackcorp.com",
+				Help:  "HK (Hong Kong) Endpoint",
+			}, {
+				Value: "mn.s3.rackcorp.com",
+				Help:  "Ulaanbaatar (Mongolia) Endpoint",
+			}, {
+				Value: "kg.s3.rackcorp.com",
+				Help:  "Bishkek (Kyrgyzstan) Endpoint",
+			}, {
+				Value: "id.s3.rackcorp.com",
+				Help:  "Jakarta (Indonesia) Endpoint",
+			}, {
+				Value: "jp.s3.rackcorp.com",
+				Help:  "Tokyo (Japan) Endpoint",
+			}, {
+				Value: "sg.s3.rackcorp.com",
+				Help:  "SG (Singapore) Endpoint",
+			}, {
+				Value: "de.s3.rackcorp.com",
+				Help:  "Frankfurt (Germany) Endpoint",
+			}, {
+				Value: "us.s3.rackcorp.com",
+				Help:  "USA (AnyCast) Endpoint",
+			}, {
+				Value: "us-east-1.s3.rackcorp.com",
+				Help:  "New York (USA) Endpoint",
+			}, {
+				Value: "us-west-1.s3.rackcorp.com",
+				Help:  "Freemont (USA) Endpoint",
+			}, {
+				Value: "nz.s3.rackcorp.com",
+				Help:  "Auckland (New Zealand) Endpoint",
+			}},
+		}, {
 			Name:     "endpoint",
 			Help:     "Endpoint for S3 API.\n\nRequired when using an S3 clone.",
-			Provider: "!AWS,IBMCOS,TencentCOS,Alibaba,Scaleway,StackPath",
+			Provider: "!AWS,IBMCOS,TencentCOS,Alibaba,Scaleway,StackPath,RackCorp",
 			Examples: []fs.OptionExample{{
 				Value:    "objects-us-east-1.dream.io",
 				Help:     "Dream Objects endpoint",
@@ -819,8 +947,70 @@ func init() {
 			}},
 		}, {
 			Name:     "location_constraint",
+			Help:     "Location constraint - the location where your bucket will be located and your data stored.\n",
+			Provider: "RackCorp",
+			Examples: []fs.OptionExample{{
+				Value: "global",
+				Help:  "Global CDN Region",
+			}, {
+				Value: "au",
+				Help:  "Australia (All locations)",
+			}, {
+				Value: "au-nsw",
+				Help:  "NSW (Australia) Region",
+			}, {
+				Value: "au-qld",
+				Help:  "QLD (Australia) Region",
+			}, {
+				Value: "au-vic",
+				Help:  "VIC (Australia) Region",
+			}, {
+				Value: "au-wa",
+				Help:  "Perth (Australia) Region",
+			}, {
+				Value: "ph",
+				Help:  "Manila (Philippines) Region",
+			}, {
+				Value: "th",
+				Help:  "Bangkok (Thailand) Region",
+			}, {
+				Value: "hk",
+				Help:  "HK (Hong Kong) Region",
+			}, {
+				Value: "mn",
+				Help:  "Ulaanbaatar (Mongolia) Region",
+			}, {
+				Value: "kg",
+				Help:  "Bishkek (Kyrgyzstan) Region",
+			}, {
+				Value: "id",
+				Help:  "Jakarta (Indonesia) Region",
+			}, {
+				Value: "jp",
+				Help:  "Tokyo (Japan) Region",
+			}, {
+				Value: "sg",
+				Help:  "SG (Singapore) Region",
+			}, {
+				Value: "de",
+				Help:  "Frankfurt (Germany) Region",
+			}, {
+				Value: "us",
+				Help:  "USA (AnyCast) Region",
+			}, {
+				Value: "us-east-1",
+				Help:  "New York (USA) Region",
+			}, {
+				Value: "us-west-1",
+				Help:  "Freemont (USA) Region",
+			}, {
+				Value: "nz",
+				Help:  "Auckland (New Zealand) Region",
+			}},
+		}, {
+			Name:     "location_constraint",
 			Help:     "Location constraint - must be set to match the Region.\n\nLeave blank if not sure. Used when creating buckets only.",
-			Provider: "!AWS,IBMCOS,Alibaba,Scaleway,StackPath,TencentCOS",
+			Provider: "!AWS,IBMCOS,Alibaba,RackCorp,Scaleway,StackPath,TencentCOS",
 		}, {
 			Name: "acl",
 			Help: `Canned ACL used when creating buckets and storing or copying objects.
@@ -1557,7 +1747,7 @@ func s3Connection(ctx context.Context, opt *Options, client *http.Client) (*s3.S
 	// start a new AWS session
 	awsSession, err := session.NewSession()
 	if err != nil {
-		return nil, nil, errors.Wrap(err, "NewSession")
+		return nil, nil, fmt.Errorf("NewSession: %w", err)
 	}
 
 	// first provider to supply a credential set "wins"
@@ -1661,7 +1851,7 @@ func s3Connection(ctx context.Context, opt *Options, client *http.Client) (*s3.S
 
 func checkUploadChunkSize(cs fs.SizeSuffix) error {
 	if cs < minChunkSize {
-		return errors.Errorf("%s is less than %s", cs, minChunkSize)
+		return fmt.Errorf("%s is less than %s", cs, minChunkSize)
 	}
 	return nil
 }
@@ -1676,7 +1866,7 @@ func (f *Fs) setUploadChunkSize(cs fs.SizeSuffix) (old fs.SizeSuffix, err error)
 
 func checkUploadCutoff(cs fs.SizeSuffix) error {
 	if cs > maxUploadCutoff {
-		return errors.Errorf("%s is greater than %s", cs, maxUploadCutoff)
+		return fmt.Errorf("%s is greater than %s", cs, maxUploadCutoff)
 	}
 	return nil
 }
@@ -1723,6 +1913,8 @@ func setQuirks(opt *Options) {
 	case "Netease":
 		listObjectsV2 = false // untested
 		urlEncodeListings = false
+	case "RackCorp":
+		// No quirks
 	case "Scaleway":
 		// Scaleway can only have 1000 parts in an upload
 		if opt.MaxUploadParts > 1000 {
@@ -1789,11 +1981,11 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 	}
 	err = checkUploadChunkSize(opt.ChunkSize)
 	if err != nil {
-		return nil, errors.Wrap(err, "s3: chunk size")
+		return nil, fmt.Errorf("s3: chunk size: %w", err)
 	}
 	err = checkUploadCutoff(opt.UploadCutoff)
 	if err != nil {
-		return nil, errors.Wrap(err, "s3: upload cutoff")
+		return nil, fmt.Errorf("s3: upload cutoff: %w", err)
 	}
 	if opt.ACL == "" {
 		opt.ACL = "private"
@@ -1931,13 +2123,13 @@ func (f *Fs) getBucketLocation(ctx context.Context, bucket string) (string, erro
 func (f *Fs) updateRegionForBucket(ctx context.Context, bucket string) error {
 	region, err := f.getBucketLocation(ctx, bucket)
 	if err != nil {
-		return errors.Wrap(err, "reading bucket location failed")
+		return fmt.Errorf("reading bucket location failed: %w", err)
 	}
 	if aws.StringValue(f.c.Config.Endpoint) != "" {
-		return errors.Errorf("can't set region to %q as endpoint is set", region)
+		return fmt.Errorf("can't set region to %q as endpoint is set", region)
 	}
 	if aws.StringValue(f.c.Config.Region) == region {
-		return errors.Errorf("region is already %q - not updating", region)
+		return fmt.Errorf("region is already %q - not updating", region)
 	}
 
 	// Make a new session with the new region
@@ -1945,7 +2137,7 @@ func (f *Fs) updateRegionForBucket(ctx context.Context, bucket string) error {
 	f.opt.Region = region
 	c, ses, err := s3Connection(f.ctx, &f.opt, f.srv)
 	if err != nil {
-		return errors.Wrap(err, "creating new session failed")
+		return fmt.Errorf("creating new session failed: %w", err)
 	}
 	f.c = c
 	f.ses = ses
@@ -2141,7 +2333,7 @@ func (f *Fs) list(ctx context.Context, bucket, directory, prefix string, addBuck
 		if startAfter != nil && urlEncodeListings {
 			*startAfter, err = url.QueryUnescape(*startAfter)
 			if err != nil {
-				return errors.Wrapf(err, "failed to URL decode StartAfter/NextMarker %q", *continuationToken)
+				return fmt.Errorf("failed to URL decode StartAfter/NextMarker %q: %w", *continuationToken, err)
 			}
 		}
 	}
@@ -2727,7 +2919,7 @@ func (f *Fs) Command(ctx context.Context, name string, arg []string, opt map[str
 		if lifetime := opt["lifetime"]; lifetime != "" {
 			ilifetime, err := strconv.ParseInt(lifetime, 10, 64)
 			if err != nil {
-				return nil, errors.Wrap(err, "bad lifetime")
+				return nil, fmt.Errorf("bad lifetime: %w", err)
 			}
 			req.RestoreRequest.Days = &ilifetime
 		}
@@ -2786,7 +2978,7 @@ func (f *Fs) Command(ctx context.Context, name string, arg []string, opt map[str
 		if opt["max-age"] != "" {
 			maxAge, err = fs.ParseDuration(opt["max-age"])
 			if err != nil {
-				return nil, errors.Wrap(err, "bad max-age")
+				return nil, fmt.Errorf("bad max-age: %w", err)
 			}
 		}
 		return nil, f.cleanUp(ctx, maxAge)
@@ -2820,7 +3012,7 @@ func (f *Fs) listMultipartUploads(ctx context.Context, bucket, key string) (uplo
 			return f.shouldRetry(ctx, err)
 		})
 		if err != nil {
-			return nil, errors.Wrapf(err, "list multipart uploads bucket %q key %q", bucket, key)
+			return nil, fmt.Errorf("list multipart uploads bucket %q key %q: %w", bucket, key, err)
 		}
 		uploads = append(uploads, resp.Uploads...)
 		if !aws.BoolValue(resp.IsTruncated) {
@@ -2878,7 +3070,7 @@ func (f *Fs) cleanUpBucket(ctx context.Context, bucket string, maxAge time.Durat
 				}
 				_, abortErr := f.c.AbortMultipartUpload(&req)
 				if abortErr != nil {
-					err = errors.Wrapf(abortErr, "failed to remove %s", what)
+					err = fmt.Errorf("failed to remove %s: %w", what, abortErr)
 					fs.Errorf(f, "%v", err)
 				}
 			} else {
@@ -3218,7 +3410,7 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 	})
 	if err, ok := err.(awserr.RequestFailure); ok {
 		if err.Code() == "InvalidObjectState" {
-			return nil, errors.Errorf("Object in GLACIER, restore first: bucket=%q, key=%q", bucket, bucketPath)
+			return nil, fmt.Errorf("Object in GLACIER, restore first: bucket=%q, key=%q", bucket, bucketPath)
 		}
 	}
 	if err != nil {
@@ -3296,7 +3488,7 @@ func (o *Object) uploadMultipart(ctx context.Context, req *s3.PutObjectInput, si
 		return f.shouldRetry(ctx, err)
 	})
 	if err != nil {
-		return errors.Wrap(err, "multipart upload failed to initialise")
+		return fmt.Errorf("multipart upload failed to initialise: %w", err)
 	}
 	uid := cout.UploadId
 
@@ -3356,7 +3548,7 @@ func (o *Object) uploadMultipart(ctx context.Context, req *s3.PutObjectInput, si
 			finished = true
 		} else if err != nil {
 			free()
-			return errors.Wrap(err, "multipart upload failed to read source")
+			return fmt.Errorf("multipart upload failed to read source: %w", err)
 		}
 		buf = buf[:n]
 
@@ -3403,7 +3595,7 @@ func (o *Object) uploadMultipart(ctx context.Context, req *s3.PutObjectInput, si
 				return false, nil
 			})
 			if err != nil {
-				return errors.Wrap(err, "multipart upload failed to upload part")
+				return fmt.Errorf("multipart upload failed to upload part: %w", err)
 			}
 			return nil
 		})
@@ -3431,7 +3623,7 @@ func (o *Object) uploadMultipart(ctx context.Context, req *s3.PutObjectInput, si
 		return f.shouldRetry(ctx, err)
 	})
 	if err != nil {
-		return errors.Wrap(err, "multipart upload failed to finalise")
+		return fmt.Errorf("multipart upload failed to finalise: %w", err)
 	}
 	return nil
 }
@@ -3557,7 +3749,7 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 		// PutObject so we'll use this work-around.
 		url, headers, err := putObj.PresignRequest(15 * time.Minute)
 		if err != nil {
-			return errors.Wrap(err, "s3 upload: sign request")
+			return fmt.Errorf("s3 upload: sign request: %w", err)
 		}
 
 		if o.fs.opt.V2Auth && headers == nil {
@@ -3572,7 +3764,7 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 		// create the vanilla http request
 		httpReq, err := http.NewRequestWithContext(ctx, "PUT", url, in)
 		if err != nil {
-			return errors.Wrap(err, "s3 upload: new request")
+			return fmt.Errorf("s3 upload: new request: %w", err)
 		}
 
 		// set the headers we signed and the length
@@ -3592,7 +3784,7 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 			if resp.StatusCode >= 200 && resp.StatusCode < 299 {
 				return false, nil
 			}
-			err = errors.Errorf("s3 upload: %s: %s", resp.Status, body)
+			err = fmt.Errorf("s3 upload: %s: %s", resp.Status, body)
 			return fserrors.ShouldRetryHTTP(resp, retryErrorCodes), err
 		})
 		if err != nil {

@@ -1,5 +1,5 @@
 // Package crypt provides wrappers for Fs and Object which implement encryption
-package crypt
+package cryptdb
 
 import (
 	"context"

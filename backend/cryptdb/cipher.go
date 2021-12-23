@@ -282,6 +282,7 @@ func (c *Cipher) encryptSegment(plaintext string) string {
 			
 		}
 		return bs
+	}
 	return n
 }
 

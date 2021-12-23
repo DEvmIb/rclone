@@ -187,14 +187,14 @@ type Cipher struct {
 }
 
 // newCipher initialises the cipher.  If salt is "" then it uses a built in salt val
-func newCipher(mode NameEncryptionMode, password, salt string, dirNameEncrypt bool, enc fileNameEncoding, dbpath string, dbfilenamesize int) (*Cipher, error) {
+func newCipher(mode NameEncryptionMode, password, salt string, dirNameEncrypt bool, enc fileNameEncoding, dbpath string, dbfilenamemaxlength int) (*Cipher, error) {
 	c := &Cipher{
 		mode:           mode,
 		fileNameEnc:    enc,
 		cryptoRand:     rand.Reader,
 		dirNameEncrypt: dirNameEncrypt,
 		dbPath: dbpath,
-		dbFileNameMaxLength: dbfilenamesize,
+		dbFileNameMaxLength: dbfilenamemaxlength,
 	}
 	c.buffers.New = func() interface{} {
 		return make([]byte, blockSize)
@@ -270,13 +270,11 @@ func (c *Cipher) encryptSegment(plaintext string) string {
 	}
 	paddedPlaintext := pkcs7.Pad(nameCipherBlockSize, []byte(plaintext))
 	ciphertext := eme.Transform(c.block, c.nameTweak[:], paddedPlaintext, eme.DirectionEncrypt)
-	//fs.LogPrintf(fs.LogLevelNotice, nil,"e-segment: %s",plaintext)
 	n := c.fileNameEnc.EncodeToString(ciphertext)
 	if len(n) > c.dbFileNameMaxLength {
 		h := sha1.New()
 		h.Write([]byte(n))
 		bs := "db."+hex.EncodeToString(h.Sum(nil))
-
 		if _, err := os.Stat(c.dbPath+"/"+bs); errors.Is(err, os.ErrNotExist) {
 			file, _ := os.Create(c.dbPath+"/"+bs)
 			defer file.Close()
@@ -284,17 +282,7 @@ func (c *Cipher) encryptSegment(plaintext string) string {
 			
 		}
 		return bs
-		//fs.LogPrintf(fs.LogLevelNotice, nil,"e-dirname: %s in: %s sum: %s",n,in,bs)
-		
-		//if err != nil {
-		//	return
-		//}
-		
-
-	}
-	//fs.LogPrintf(fs.LogLevelNotice, nil,"e-segment: %s",plaintext)
-
-	return c.fileNameEnc.EncodeToString(ciphertext)
+	return n
 }
 
 // decryptSegment decrypts a path segment
@@ -302,18 +290,11 @@ func (c *Cipher) decryptSegment(ciphertext string) (string, error) {
 	if ciphertext == "" {
 		return "", nil
 	}
-
-	//fs.LogPrintf(fs.LogLevelNotice, nil,"d-segment: %s",ciphertext)
-	//if in != "" {
 	if ciphertext[0:3] == "db." {
 		data, _ := ioutil.ReadFile(c.dbPath+"/"+ciphertext)
-		//if err != nil {
-		//	return
-		//}
 		ciphertext = string(data)
 
 	}
-	//}
 	rawCiphertext, err := c.fileNameEnc.DecodeString(ciphertext)
 	if err != nil {
 		return "", err

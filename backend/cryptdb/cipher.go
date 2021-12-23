@@ -1,4 +1,4 @@
-package crypt
+package cryptdb
 
 import (
 	"bytes"
@@ -6,11 +6,15 @@ import (
 	"crypto/aes"
 	gocipher "crypto/cipher"
 	"crypto/rand"
+	"crypto/sha1"
 	"encoding/base32"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,7 +22,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Max-Sum/base32768"
-	"github.com/rclone/rclone/backend/crypt/pkcs7"
+	"github.com/rclone/rclone/backend/cryptdb/pkcs7"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/accounting"
 	"github.com/rclone/rclone/lib/version"
@@ -178,15 +182,19 @@ type Cipher struct {
 	buffers        sync.Pool // encrypt/decrypt buffers
 	cryptoRand     io.Reader // read crypto random numbers from here
 	dirNameEncrypt bool
+	dbPath string
+	dbFileNameMaxLength int
 }
 
 // newCipher initialises the cipher.  If salt is "" then it uses a built in salt val
-func newCipher(mode NameEncryptionMode, password, salt string, dirNameEncrypt bool, enc fileNameEncoding) (*Cipher, error) {
+func newCipher(mode NameEncryptionMode, password, salt string, dirNameEncrypt bool, enc fileNameEncoding, dbpath string, dbfilenamesize int) (*Cipher, error) {
 	c := &Cipher{
 		mode:           mode,
 		fileNameEnc:    enc,
 		cryptoRand:     rand.Reader,
 		dirNameEncrypt: dirNameEncrypt,
+		dbPath: dbpath,
+		dbFileNameMaxLength: dbfilenamesize,
 	}
 	c.buffers.New = func() interface{} {
 		return make([]byte, blockSize)
@@ -262,6 +270,30 @@ func (c *Cipher) encryptSegment(plaintext string) string {
 	}
 	paddedPlaintext := pkcs7.Pad(nameCipherBlockSize, []byte(plaintext))
 	ciphertext := eme.Transform(c.block, c.nameTweak[:], paddedPlaintext, eme.DirectionEncrypt)
+	//fs.LogPrintf(fs.LogLevelNotice, nil,"e-segment: %s",plaintext)
+	n := c.fileNameEnc.EncodeToString(ciphertext)
+	if len(n) > c.dbFileNameMaxLength {
+		h := sha1.New()
+		h.Write([]byte(n))
+		bs := "db."+hex.EncodeToString(h.Sum(nil))
+
+		if _, err := os.Stat(c.dbPath+"/"+bs); errors.Is(err, os.ErrNotExist) {
+			file, _ := os.Create(c.dbPath+"/"+bs)
+			defer file.Close()
+			file.WriteString(n)
+			
+		}
+		return bs
+		//fs.LogPrintf(fs.LogLevelNotice, nil,"e-dirname: %s in: %s sum: %s",n,in,bs)
+		
+		//if err != nil {
+		//	return
+		//}
+		
+
+	}
+	//fs.LogPrintf(fs.LogLevelNotice, nil,"e-segment: %s",plaintext)
+
 	return c.fileNameEnc.EncodeToString(ciphertext)
 }
 
@@ -270,6 +302,18 @@ func (c *Cipher) decryptSegment(ciphertext string) (string, error) {
 	if ciphertext == "" {
 		return "", nil
 	}
+
+	//fs.LogPrintf(fs.LogLevelNotice, nil,"d-segment: %s",ciphertext)
+	//if in != "" {
+	if ciphertext[0:3] == "db." {
+		data, _ := ioutil.ReadFile(c.dbPath+"/"+ciphertext)
+		//if err != nil {
+		//	return
+		//}
+		ciphertext = string(data)
+
+	}
+	//}
 	rawCiphertext, err := c.fileNameEnc.DecodeString(ciphertext)
 	if err != nil {
 		return "", err

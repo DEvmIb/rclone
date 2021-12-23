@@ -24,13 +24,22 @@ import (
 // Register with Fs
 func init() {
 	fs.Register(&fs.RegInfo{
-		Name:        "crypt",
+		Name:        "cryptdb",
 		Description: "Encrypt/Decrypt a remote",
 		NewFs:       NewFs,
 		CommandHelp: commandHelp,
 		Options: []fs.Option{{
 			Name:     "remote",
 			Help:     "Remote to encrypt/decrypt.\n\nNormally should contain a ':' and a path, e.g. \"myremote:path/to/dir\",\n\"myremote:bucket\" or maybe \"myremote:\" (not recommended).",
+			Required: true,
+		}, {
+			Name:     "dbpath",
+			Help:     "directory for saving local filenames",
+			Required: true,
+		},  {
+			Name:     "dbfilenamemaxlength",
+			Help:     "encrypted filenames length bigger as this value will be saved local into dbpath",
+			Default: 255,
 			Required: true,
 		}, {
 			Name:    "filename_encryption",
@@ -167,7 +176,7 @@ func newCipherForConfig(opt *Options) (*Cipher, error) {
 	if err != nil {
 		return nil, err
 	}
-	cipher, err := newCipher(mode, password, salt, opt.DirectoryNameEncryption, enc)
+	cipher, err := newCipher(mode, password, salt, opt.DirectoryNameEncryption, enc, opt.DBPath, opt.DBFileNameMaxLength)
 	if err != nil {
 		return nil, fmt.Errorf("failed to make cipher: %w", err)
 	}
@@ -249,6 +258,8 @@ func NewFs(ctx context.Context, name, rpath string, m configmap.Mapper) (fs.Fs, 
 // Options defines the configuration for this backend
 type Options struct {
 	Remote                  string `config:"remote"`
+	DBPath      			string `config:"dbpath"`
+	DBFileNameMaxLength      int    `config:"dbfilenamemaxlength"`
 	FilenameEncryption      string `config:"filename_encryption"`
 	DirectoryNameEncryption bool   `config:"directory_name_encryption"`
 	NoDataEncryption        bool   `config:"no_data_encryption"`

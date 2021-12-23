@@ -1,12 +1,12 @@
 // Test Crypt filesystem interface
-package crypt_test
+package cryptdb_test
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/rclone/rclone/backend/crypt"
+	"github.com/rclone/rclone/backend/cryptdb"
 	_ "github.com/rclone/rclone/backend/drive" // for integration tests
 	_ "github.com/rclone/rclone/backend/local"
 	_ "github.com/rclone/rclone/backend/swift" // for integration tests

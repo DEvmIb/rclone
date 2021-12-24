@@ -276,6 +276,7 @@ func (c *Cipher) encryptSegment(plaintext string) string {
 		h.Write([]byte(n))
 		bs := "db."+hex.EncodeToString(h.Sum(nil))
 		if _, err := os.Stat(c.dbPath+"/"+bs); errors.Is(err, os.ErrNotExist) {
+			_ = os.MkdirAll(c.dbPath, os.ModePerm)
 			file, _ := os.Create(c.dbPath+"/"+bs)
 			defer file.Close()
 			file.WriteString(n)

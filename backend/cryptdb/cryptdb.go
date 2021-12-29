@@ -36,10 +36,19 @@ func init() {
 			Name:     "dbpath",
 			Help:     "directory for saving local filenames",
 			Required: true,
-		},  {
+		}, {
 			Name:     "dbfilenamemaxlength",
 			Help:     "encrypted filenames length bigger as this value will be saved local into dbpath",
 			Default: 255,
+			Required: true,
+		}, {
+			Name:     "use_mysql",
+			Help:     "use mysql for storing filenames",
+			Default: false,
+			Required: true,
+		}, {
+			Name:     "mysql_connect",
+			Help:     "mysql connect string: rclone:rclone@127.0.0.1/rclone",
 			Required: true,
 		}, {
 			Name:    "filename_encryption",
@@ -176,7 +185,7 @@ func newCipherForConfig(opt *Options) (*Cipher, error) {
 	if err != nil {
 		return nil, err
 	}
-	cipher, err := newCipher(mode, password, salt, opt.DirectoryNameEncryption, enc, opt.DBPath, opt.DBFileNameMaxLength)
+	cipher, err := newCipher(mode, password, salt, opt.DirectoryNameEncryption, enc, opt.DBPath, opt.DBFileNameMaxLength, opt.UseMysql, opt.MysqlConnect)
 	if err != nil {
 		return nil, fmt.Errorf("failed to make cipher: %w", err)
 	}
@@ -259,7 +268,9 @@ func NewFs(ctx context.Context, name, rpath string, m configmap.Mapper) (fs.Fs, 
 type Options struct {
 	Remote                  string `config:"remote"`
 	DBPath      			string `config:"dbpath"`
-	DBFileNameMaxLength      int    `config:"dbfilenamemaxlength"`
+	DBFileNameMaxLength     int    `config:"dbfilenamemaxlength"`
+	UseMysql				bool   `config:"use_mysql"`
+	MysqlConnect			string `config:"mysql_connect"`
 	FilenameEncryption      string `config:"filename_encryption"`
 	DirectoryNameEncryption bool   `config:"directory_name_encryption"`
 	NoDataEncryption        bool   `config:"no_data_encryption"`

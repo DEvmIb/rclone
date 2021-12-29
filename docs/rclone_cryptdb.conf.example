@@ -3,6 +3,8 @@ type = cryptdb
 remote = /tmp/test/
 dbpath = /tmp/test-meta/
 dbfilenamemaxlength = 255
-password = z18wvBbLZd_2B398zR_SFQlxpeipbP6byfYC7ycKmuOqTwS8ZvrJeR8AV7GcL1m4yGYeNHjHBvpCFJO4EjBROTIOUge6397dq-bSA5hXZ63gaLxAUA32zQdRwr9y-kP6AqlortOTujH7NEVzmgzUkX3aCMbHqYCW2V7mboUf3Rl3XGNR-IRvDUwBSpZhku-YMfg0_mp_5ckGL4plIwlxUfGYOtNXtJi_dqB-0tWASYJfG8YoD1Br7raR-A
-password2 = AL4ask42qKSymAwaVUWAtcb_dXF49mOsghuunRhB-5k55c-ceERAE3UZWEBRko6sc7sCq_O01PKDdtboZRORyidI15s14JM_5tOJYDKrRoH-iNiprVAKzIBaRA2mAdDw7Xu2UxJTr5Pd5mW5Lm-HqKe52MwnGshZlYHquYl5-MYmtSNwgCpj4hDx6mgAKtcd_2-QFTnDtnoRpbwyaurg5sN3X77xE0QoPoz_KiVg-qbB_BubhKmGqEYvKA
+use_mysql = true
+mysql_connect = rclone:rclone@tcp(10.21.200.152:3306)/rclone
+password = fNawI5rR-LHznW71Cf4W283XX64xd-3BG0aX
+password2 = VFB2ADK4i5ece8KVXxxc_dwA9O2DuvGYsKLb
 

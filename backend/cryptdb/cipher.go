@@ -7,6 +7,8 @@ import (
 	gocipher "crypto/cipher"
 	"crypto/rand"
 	"crypto/sha1"
+	"database/sql"
+	_ "github.com/go-sql-driver/mysql"
 	"encoding/base32"
 	"encoding/base64"
 	"encoding/hex"
@@ -184,10 +186,12 @@ type Cipher struct {
 	dirNameEncrypt bool
 	dbPath string
 	dbFileNameMaxLength int
+	use_mysql bool
+	mysql_connect string
 }
 
 // newCipher initialises the cipher.  If salt is "" then it uses a built in salt val
-func newCipher(mode NameEncryptionMode, password, salt string, dirNameEncrypt bool, enc fileNameEncoding, dbpath string, dbfilenamemaxlength int) (*Cipher, error) {
+func newCipher(mode NameEncryptionMode, password, salt string, dirNameEncrypt bool, enc fileNameEncoding, dbpath string, dbfilenamemaxlength int, use_mysql bool, mysql_connect string) (*Cipher, error) {
 	c := &Cipher{
 		mode:           mode,
 		fileNameEnc:    enc,
@@ -195,6 +199,8 @@ func newCipher(mode NameEncryptionMode, password, salt string, dirNameEncrypt bo
 		dirNameEncrypt: dirNameEncrypt,
 		dbPath: dbpath,
 		dbFileNameMaxLength: dbfilenamemaxlength,
+		use_mysql: use_mysql,
+		mysql_connect: mysql_connect,
 	}
 	c.buffers.New = func() interface{} {
 		return make([]byte, blockSize)
@@ -275,12 +281,32 @@ func (c *Cipher) encryptSegment(plaintext string) string {
 		h := sha1.New()
 		h.Write([]byte(n))
 		bs := "db."+hex.EncodeToString(h.Sum(nil))
-		if _, err := os.Stat(c.dbPath+"/"+bs); errors.Is(err, os.ErrNotExist) {
-			_ = os.MkdirAll(c.dbPath, os.ModePerm)
-			file, _ := os.Create(c.dbPath+"/"+bs)
-			defer file.Close()
-			file.WriteString(n)
-			
+		if c.use_mysql == true {
+			db, _ := sql.Open("mysql", c.mysql_connect)
+			defer db.Close()
+			db.SetConnMaxLifetime(time.Minute * 1)
+			db.SetMaxOpenConns(10)
+			db.SetMaxIdleConns(10)
+			err := db.Ping()
+			if err != nil {
+				panic(err.Error())
+			}
+			query, err := db.Prepare("insert ignore into names (id,value) values(?,?)")
+			if err != nil {
+				panic(err.Error())
+			}
+			defer query.Close()
+			_, err = query.Exec(bs,n)
+			if err != nil {
+				panic("muh "+err.Error()) // proper error handling instead of panic in your app
+			}
+		} else {
+			if _, err := os.Stat(c.dbPath+"/"+bs); errors.Is(err, os.ErrNotExist) {
+				_ = os.MkdirAll(c.dbPath, os.ModePerm)
+				file, _ := os.Create(c.dbPath+"/"+bs)
+				defer file.Close()
+				file.WriteString(n)
+			}
 		}
 		return bs
 	}
@@ -293,9 +319,27 @@ func (c *Cipher) decryptSegment(ciphertext string) (string, error) {
 		return "", nil
 	}
 	if ciphertext[0:3] == "db." {
-		data, _ := ioutil.ReadFile(c.dbPath+"/"+ciphertext)
-		ciphertext = string(data)
-
+		if c.use_mysql == true {
+			db, err := sql.Open("mysql", c.mysql_connect)
+			if err != nil {
+				panic(err.Error())
+			}
+			defer db.Close()
+			query, err := db.Prepare("select value from names where id=?")
+			if err != nil {
+				panic(err.Error())
+			}
+			defer query.Close()
+			var name string
+			err = query.QueryRow(ciphertext).Scan(&name)
+			if err !=nil {
+				panic(err.Error())
+			}
+			ciphertext=name
+		} else {
+			data, _ := ioutil.ReadFile(c.dbPath+"/"+ciphertext)
+			ciphertext = string(data)
+		}
 	}
 	rawCiphertext, err := c.fileNameEnc.DecodeString(ciphertext)
 	if err != nil {

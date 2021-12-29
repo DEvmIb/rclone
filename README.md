@@ -1,3 +1,18 @@
+
+# Personal Rclone repo with my patches
+
+for the original repo of rclone goto: [https://github.com/rclone/rclone]
+
+currently rclone patches from me:
+* m2mfs
+      - creating an union with all disk avaiable to the system and copy every file only to the most 2 free disks
+* cryptdb backend
+      - long filenames bigger than 255 will be written to local db (plain files, mysql planning)
+
+#
+
+
+
 [<img src="https://rclone.org/img/logo_on_light__horizontal_color.svg" width="50%" alt="rclone logo">](https://rclone.org/)
 
 [Website](https://rclone.org) |

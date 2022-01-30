@@ -84,10 +84,9 @@ func init() {
 		},
 		Options: []fs.Option{
 			{
-				Name:     fs.ConfigProvider,
-				Help:     "Choose an authentication method.",
-				Required: true,
-				Default:  existingProvider,
+				Name:    fs.ConfigProvider,
+				Help:    "Choose an authentication method.",
+				Default: existingProvider,
 				Examples: []fs.OptionExample{{
 					Value: "existing",
 					Help:  "Use an existing access grant.",
@@ -99,13 +98,11 @@ func init() {
 			{
 				Name:     "access_grant",
 				Help:     "Access grant.",
-				Required: false,
 				Provider: "existing",
 			},
 			{
 				Name:     "satellite_address",
 				Help:     "Satellite address.\n\nCustom satellite address should match the format: `<nodeid>@<address>:<port>`.",
-				Required: false,
 				Provider: newProvider,
 				Default:  "us-central-1.tardigrade.io",
 				Examples: []fs.OptionExample{{
@@ -123,13 +120,11 @@ func init() {
 			{
 				Name:     "api_key",
 				Help:     "API key.",
-				Required: false,
 				Provider: newProvider,
 			},
 			{
 				Name:     "passphrase",
 				Help:     "Encryption passphrase.\n\nTo access existing objects enter passphrase used for uploading.",
-				Required: false,
 				Provider: newProvider,
 			},
 		},

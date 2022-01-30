@@ -38,7 +38,7 @@ Here is an example of making an SFTP configuration.  First run
 This will guide you through an interactive setup process.
 
 ```
-No remotes found - make a new one
+No remotes found, make a new one?
 n) New remote
 s) Set configuration password
 q) Quit config
@@ -56,9 +56,11 @@ Choose a number from below, or type in your own value
  1 / Connect to example.com
    \ "example.com"
 host> example.com
-SSH username, leave blank for current username, $USER
+SSH username
+Enter a string value. Press Enter for the default ("$USER").
 user> sftpuser
-SSH port, leave blank to use default (22)
+SSH port number
+Enter a signed integer. Press Enter for the default (22).
 port>
 SSH password, leave blank to use ssh-agent.
 y) Yes type in my own password

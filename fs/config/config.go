@@ -51,7 +51,7 @@ const (
 	ConfigEncoding = "encoding"
 
 	// ConfigEncodingHelp is the help for ConfigEncoding
-	ConfigEncodingHelp = "This sets the encoding for the backend.\n\nSee the [encoding section in the overview](/overview/#encoding) for more info."
+	ConfigEncodingHelp = "The encoding for the backend.\n\nSee the [encoding section in the overview](/overview/#encoding) for more info."
 
 	// ConfigAuthorize indicates that we just want "rclone authorize"
 	ConfigAuthorize = "config_authorize"
@@ -570,9 +570,10 @@ func JSONListProviders() error {
 // fsOption returns an Option describing the possible remotes
 func fsOption() *fs.Option {
 	o := &fs.Option{
-		Name:    "Storage",
-		Help:    "Type of storage to configure.",
-		Default: "",
+		Name:     "Storage",
+		Help:     "Type of storage to configure.",
+		Default:  "",
+		Required: true,
 	}
 	for _, item := range fs.Registry {
 		example := fs.OptionExample{

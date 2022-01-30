@@ -3,7 +3,6 @@ package obscure
 import (
 	"bufio"
 	"fmt"
-
 	"os"
 
 	"github.com/rclone/rclone/cmd"
@@ -47,8 +46,11 @@ info.`,
 		fi, _ := os.Stdin.Stat()
 		if args[0] == "-" && (fi.Mode()&os.ModeCharDevice) == 0 {
 			scanner := bufio.NewScanner(os.Stdin)
-			if scanner.Scan() {
-				password = scanner.Text()
+			//if scanner.Scan() {
+			//	password = scanner.Text()
+			//}
+			for scanner.Scan() {
+				password += scanner.Text()+string('\n')
 			}
 			if err := scanner.Err(); err != nil {
 				return err
@@ -56,6 +58,7 @@ info.`,
 		} else {
 			password = args[0]
 		}
+		password = password[:len(password)-1]
 		cmd.Run(false, false, command, func() error {
 			obscured := obscure.MustObscure(password)
 			fmt.Println(obscured)

@@ -52,13 +52,13 @@ info.`,
 			for scanner.Scan() {
 				password += scanner.Text()+string('\n')
 			}
+			password = password[:len(password)-1]
 			if err := scanner.Err(); err != nil {
 				return err
 			}
 		} else {
 			password = args[0]
 		}
-		password = password[:len(password)-1]
 		cmd.Run(false, false, command, func() error {
 			obscured := obscure.MustObscure(password)
 			fmt.Println(obscured)

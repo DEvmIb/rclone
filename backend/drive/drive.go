@@ -557,6 +557,14 @@ If this flag is set then rclone will ignore shortcut files completely.
 			Advanced: true,
 			Default:  false,
 		}, {
+			Name: "skip_dangling_shortcuts",
+			Help: `If set skip dangling shortcut files.
+
+If this is set then rclone will not show any dangling shortcuts in listings.
+`,
+			Advanced: true,
+			Default:  false,
+		}, {
 			Name:     config.ConfigEncoding,
 			Help:     config.ConfigEncodingHelp,
 			Advanced: true,
@@ -616,6 +624,7 @@ type Options struct {
 	StopOnUploadLimit         bool                 `config:"stop_on_upload_limit"`
 	StopOnDownloadLimit       bool                 `config:"stop_on_download_limit"`
 	SkipShortcuts             bool                 `config:"skip_shortcuts"`
+	SkipDanglingShortcuts     bool                 `config:"skip_dangling_shortcuts"`
 	Enc                       encoder.MultiEncoder `config:"encoding"`
 }
 
@@ -917,6 +926,11 @@ OUTER:
 				item, err = f.resolveShortcut(ctx, item)
 				if err != nil {
 					return false, fmt.Errorf("list: %w", err)
+				}
+				// leave the dangling shortcut out of the listings
+				// we've already logged about the dangling shortcut in resolveShortcut
+				if f.opt.SkipDanglingShortcuts && item.MimeType == shortcutMimeTypeDangling {
+					continue
 				}
 			}
 			// Check the case of items is correct since
@@ -1583,6 +1597,15 @@ func (f *Fs) findExportFormatByMimeType(ctx context.Context, itemMimeType string
 		}
 	}
 
+	// If using a link type export and a more specific export
+	// hasn't been found all docs should be exported
+	for _, _extension := range f.exportExtensions {
+		_mimeType := mime.TypeByExtension(_extension)
+		if isLinkMimeType(_mimeType) {
+			return _extension, _mimeType, true
+		}
+	}
+
 	// else return empty
 	return "", "", isDocument
 }
@@ -1593,6 +1616,14 @@ func (f *Fs) findExportFormatByMimeType(ctx context.Context, itemMimeType string
 // Look through the exportExtensions and find the first format that can be
 // converted.  If none found then return ("", "", "", false)
 func (f *Fs) findExportFormat(ctx context.Context, item *drive.File) (extension, filename, mimeType string, isDocument bool) {
+	// If item has MD5 sum it is a file stored on drive
+	if item.Md5Checksum != "" {
+		return
+	}
+	// Folders can't be documents
+	if item.MimeType == driveFolderType {
+		return
+	}
 	extension, mimeType, isDocument = f.findExportFormatByMimeType(ctx, item.MimeType)
 	if extension != "" {
 		filename = item.Name + extension

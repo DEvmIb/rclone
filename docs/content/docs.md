@@ -28,6 +28,7 @@ option:
 See the following for detailed instructions for
 
   * [1Fichier](/fichier/)
+  * [Akamai Netstorage](/netstorage/)
   * [Alias](/alias/)
   * [Amazon Drive](/amazonclouddrive/)
   * [Amazon S3](/s3/)
@@ -38,6 +39,7 @@ See the following for detailed instructions for
   * [Compress](/compress/)
   * [Crypt](/crypt/) - to encrypt other remotes
   * [DigitalOcean Spaces](/s3/#digitalocean-spaces)
+  * [Digi Storage](/koofr/#digi-storage)
   * [Dropbox](/dropbox/)
   * [Enterprise File Fabric](/filefabric/)
   * [FTP](/ftp/)

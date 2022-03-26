@@ -784,7 +784,7 @@ func (item *Item) _checkObject(o fs.Object) error {
 			// OK
 		}
 	} else {
-		remoteFingerprint := fs.Fingerprint(context.TODO(), o, false)
+		remoteFingerprint := fs.Fingerprint(context.TODO(), o, item.c.opt.FastFingerprint)
 		fs.Debugf(item.name, "vfs cache: checking remote fingerprint %q against cached fingerprint %q", remoteFingerprint, item.info.Fingerprint)
 		if item.info.Fingerprint != "" {
 			// remote object && local object
@@ -1128,7 +1128,10 @@ func (item *Item) _ensure(offset, size int64) (err error) {
 		return item.downloaders.EnsureDownloader(r)
 	}
 	if item.downloaders == nil {
-		return errors.New("internal error: downloaders is nil")
+		// Downloaders can be nil here if the file has been
+		// renamed, so need to make some more downloaders
+		// OK to call downloaders constructor with item.mu held
+		item.downloaders = downloaders.New(item, item.c.opt, item.name, item.o)
 	}
 	return item.downloaders.Download(r)
 }
@@ -1156,7 +1159,7 @@ func (item *Item) _updateFingerprint() {
 		return
 	}
 	oldFingerprint := item.info.Fingerprint
-	item.info.Fingerprint = fs.Fingerprint(context.TODO(), item.o, false)
+	item.info.Fingerprint = fs.Fingerprint(context.TODO(), item.o, item.c.opt.FastFingerprint)
 	if oldFingerprint != item.info.Fingerprint {
 		fs.Debugf(item.o, "vfs cache: fingerprint now %q", item.info.Fingerprint)
 	}

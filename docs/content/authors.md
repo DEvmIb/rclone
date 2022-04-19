@@ -577,3 +577,9 @@ put them back in again.` >}}
   * Nil Alexandrov <nalexand@akamai.com>
   * GuoXingbin <101376330+guoxingbin@users.noreply.github.com>
   * Berkan Teber <berkan@berkanteber.com>
+  * Tobias Klauser <tklauser@distanz.ch>
+  * KARBOWSKI Piotr <piotr.karbowski@gmail.com>
+  * GH <geeklihui@foxmail.com>
+  * rafma0 <int.main@gmail.com>
+  * Adrien Rey-Jarthon <jobs@adrienjarthon.com>
+  * Nick Gooding <73336146+nickgooding@users.noreply.github.com>

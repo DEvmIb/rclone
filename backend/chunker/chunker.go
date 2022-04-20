@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	gohash "hash"
+	"github.com/shomali11/util/xhashes"
 	"io"
 	"io/ioutil"
 	"math/rand"
@@ -1129,7 +1130,6 @@ func (o *Object) readXactID(ctx context.Context) (xactID string, err error) {
 func (f *Fs) put(
 	ctx context.Context, in io.Reader, src fs.ObjectInfo, remote string, options []fs.OpenOption,
 	basePut putFn, action string, target fs.Object) (obj fs.Object, err error) {
-
 	// Perform consistency checks
 	if err := f.forbidChunk(src, remote); err != nil {
 		return nil, fmt.Errorf("%s refused: %w", action, err)
@@ -1160,7 +1160,6 @@ func (f *Fs) put(
 			c.rollback(ctx, metaObject)
 		}
 	}()
-
 	baseRemote := remote
 	xactID, errXact := f.newXactID(ctx, baseRemote)
 	if errXact != nil {
@@ -1172,23 +1171,26 @@ func (f *Fs) put(
 		if c.chunkNo > maxSafeChunkNumber {
 			return nil, ErrChunkOverflow
 		}
-
+		// CCHUNKER: random size
+		// keep in mind. a single file in a folder can be calculated to real size. [ all pieces ] - [ crypt overhead ] - [ metafile ] = ! real filesize can be assumed !
+		max:=c.sizeTotal
+		min:=c.sizeTotal/2
+		use:=rand.Int63n(max-min+1) + min
 		tempRemote := f.makeChunkName(baseRemote, c.chunkNo, "", xactID)
-		size := c.sizeLeft
-		if size > c.chunkSize {
-			size = c.chunkSize
+		size := use
+		if c.sizeLeft < use {
+			size = c.sizeLeft
 		}
 		savedReadCount := c.readCount
-
 		// If a single chunk is expected, avoid the extra rename operation
 		chunkRemote := tempRemote
 		if c.expectSingle && c.chunkNo == 0 && optimizeFirstChunk {
 			chunkRemote = baseRemote
 		}
 		info := f.wrapInfo(src, chunkRemote, size)
-
 		// Refill chunkLimit and let basePut repeatedly call chunkingReader.Read()
-		c.chunkLimit = c.chunkSize
+		// CCHUNKER: random size
+		c.chunkLimit = size //c.chunkSize
 		// TODO: handle range/limit options
 		chunk, errChunk := basePut(ctx, wrapIn, info, options...)
 		if errChunk != nil {
@@ -1347,6 +1349,7 @@ type chunkingReader struct {
 func (f *Fs) newChunkingReader(src fs.ObjectInfo) *chunkingReader {
 	c := &chunkingReader{
 		fs:        f,
+		//TODO size
 		chunkSize: int64(f.opt.ChunkSize),
 		sizeTotal: src.Size(),
 	}
@@ -2097,9 +2100,44 @@ func (o *Object) Storable() bool {
 
 // ModTime returns the modification time of the file
 func (o *Object) ModTime(ctx context.Context) time.Time {
-	return o.mainChunk().ModTime(ctx)
-}
+	//fmt.Printf("%#v\r\n\r\n", o)
+	//fmt.Printf("%#v\r\n\r\n", o.f)
+	//fmt.Printf("%#v\r\n\r\n", o.mainChunk())
+	//CCHUNKER: return real modt
+	/* fmt.Printf("%#v\r\n", o)
+	fmt.Printf("%#v\r\n", o.f)
+	nano:=o.mainChunk().ModTime(ctx).UnixNano()
+	size:=o.mainChunk().Size() *1000000
+	fsname:=o.Fs().Name()
 
+	fsnamesum:=xhashes.FNV64a(fsname) //* 1000000
+
+	rmod:=nano+int64(fsnamesum)+size //+int64(hpass) */
+
+	nano:=o.mainChunk().ModTime(ctx).UnixNano()
+	size:=o.mainChunk().Size() //*1000000 // 1. not useable can be calculated 2. but good on encrypted remote as files cant be assumed belongs together (when there are multiple files in folder)
+	//fname:=oi.Remote() //string [ test1.img._.002_myla6v ] [ test1.img ] 1. can be calculated. 2. not useable
+	fsname:=o.f.name // chunker name in conf good. 1. should be same on all remotes 2. cant be calculated 3. good privacy 4. mayby to short
+	fsroot:=o.f.root // remote folder. 1. thats good. same files other folder can have other modt 2. need to be same on every client
+	fsrname:=o.f.opt.Remote // chunker remote name. same goodies as fsname
+	fmt.Printf("\n1:%s 2:%s 3:%s\n",fsname,fsroot,fsrname)
+	// generate number hashes an remove it from modt
+	fsnamesum:=xhashes.FNV64(fsname)
+	fsrootsum:=xhashes.FNV64(fsroot)
+	fsrnamesum:=xhashes.FNV64(fsrname)
+	//fs.Debugf( "fsnamesum",fmt.Sprintf("%v",fsnamesum))
+
+	fmt.Printf("\n%s %s %s %s %s\n",nano,int64(fsnamesum),int64(fsrootsum),int64(fsrnamesum),size)
+
+	rmod:=nano+int64(fsnamesum)+int64(fsrootsum)+int64(fsrnamesum) //+size //-int64(hpass)
+
+	fs.Debugf( "fsnamesum",fmt.Sprintf("%v",rmod))
+
+
+	
+
+	return time.Unix(0, rmod)
+}
 // SetModTime sets the modification time of the file
 func (o *Object) SetModTime(ctx context.Context, mtime time.Time) error {
 	if err := o.readMetadata(ctx); err != nil {
@@ -2356,7 +2394,31 @@ func (oi *ObjectInfo) Size() int64 {
 
 // ModTime returns the modification time
 func (oi *ObjectInfo) ModTime(ctx context.Context) time.Time {
-	return oi.src.ModTime(ctx)
+	//CCHUNKER: return modded modt 
+	//fmt.Printf("FS() %#v\r\n", oi)
+	fmt.Printf("REMOTE() %#v\r\n", oi.fs)
+	nano:=oi.src.ModTime(ctx).UnixNano()
+	size:=oi.size //*1000000 // 1. not useable can be calculated 2. but good on encrypted remote as files cant be assumed belongs together (when there are multiple files in folder)
+	//fname:=oi.Remote() //string [ test1.img._.002_myla6v ] [ test1.img ] 1. can be calculated. 2. not useable
+	fsname:=oi.fs.name // chunker name in conf good. 1. should be same on all remotes 2. cant be calculated 3. good privacy 4. mayby to short
+	fsroot:=oi.fs.root // remote folder. 1. thats good. same files other folder can have other modt 2. need to be same on every client
+	fsrname:=oi.fs.opt.Remote // chunker remote name. same goodies as fsname
+	fmt.Printf("\n1:%s 2:%s 3:%s\n",fsname,fsroot,fsrname)
+	// generate number hashes an remove it from modt
+
+	
+
+	fsnamesum:=xhashes.FNV64(fsname)
+	fsrootsum:=xhashes.FNV64(fsroot)
+	fsrnamesum:=xhashes.FNV64(fsrname)
+	//fs.Debugf( "fsnamesum",fmt.Sprintf("%v",fsnamesum))
+
+	fmt.Printf("\n%s %s %s %s %s\n",nano,int64(fsnamesum),int64(fsrootsum),int64(fsrnamesum),size)
+
+	rmod:=nano-int64(fsnamesum)-int64(fsrootsum)-int64(fsrnamesum)-size //-int64(hpass)
+
+	fs.Debugf( "fsnamesum",fmt.Sprintf("%v",rmod))
+	return time.Unix(0, rmod)
 }
 
 // Hash returns the selected checksum of the wrapped file

@@ -1173,11 +1173,12 @@ func (o *Object) readMetadata(ctx context.Context) error {
 }
 
 func binSuffix() string {
-	return "" //bin_Suffix
+	//return "" //bin_Suffix
+	return bin_Suffix
 }
 
 func stringToSha1(in string) string {
-	return in
+	//return in
 	fs.Debugf("stringToSha1","in: %s",in)
 	c := in
 	if len(binSuffix()) > 0 && len(c) > len(binSuffix()) {

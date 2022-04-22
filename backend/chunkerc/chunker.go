@@ -2,6 +2,8 @@
 //TODO: test rename move
 //TODO: src must have checksums
 //TODO: convert dirs to sum
+//TODO: rclone stopped before synced wrong names after restart (vfs)
+//TODO: found a bug in json blafoo... on testing the code an changed json file chunker claims bad file
 // Package chunker provides wrappers for Fs and Object which split large files in chunks
 package chunkerc
 

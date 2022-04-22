@@ -1686,11 +1686,13 @@ func (f *Fs) removeOldChunks(ctx context.Context, remote string) {
 // will return the object and the error, otherwise will return
 // nil and the error
 func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error) {
+	fs.Debugf("Put","go")
 	return f.put(ctx, in, src, src.Remote(), options, f.base.Put, "put", nil)
 }
 
 // PutStream uploads to the remote path with the modTime given of indeterminate size
 func (f *Fs) PutStream(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error) {
+	fs.Debugf("PutStream","go")
 	return f.put(ctx, in, src, src.Remote(), options, f.base.Features().PutStream, "upload", nil)
 }
 
@@ -1844,7 +1846,26 @@ func (o *Object) Remove(ctx context.Context) (err error) {
 
 // copyOrMove implements copy or move
 func (f *Fs) copyOrMove(ctx context.Context, o *Object, remote string, do copyMoveFn, md5, sha1, opName string) (fs.Object, error) {
-	fs.Debugf("copyMove","go")
+	fs.Debugf("copyOrMove","go")
+	//fs.Debugf("copyOrMove","remote: %s opName: %s",remote,opName)
+	// TODO: full path mount
+	oFile := ""
+	if len(remote) > len(binSuffix) {
+		if remote[len(remote) - len(binSuffix):] != binSuffix {
+			if strings.Contains(remote,"/") {
+				p := strings.Split(remote,"/")
+				f := p[len(p)-1]
+				oFile = f
+				remote = remote[:len(remote)-len(f)] + stringToSha1(f) + binSuffix
+			} else {
+				oFile = remote
+				remote = stringToSha1(remote) + binSuffix
+			}
+		}
+	}
+	
+	fs.Debugf("copyOrMove","remote: %s opName: %s",remote,opName)
+	
 	if err := f.forbidChunk(o, remote); err != nil {
 		return nil, fmt.Errorf("can't %s: %w", opName, err)
 	}
@@ -1863,7 +1884,16 @@ func (f *Fs) copyOrMove(ctx context.Context, o *Object, remote string, do copyMo
 	}
 
 	fs.Debugf(o, "%s %d data chunks...", opName, len(o.chunks))
-	mainRemote := o.remote
+	fs.Debugf("copyOrMove","mainRemote %s", o.remote)
+	// TODO: full path fix
+	mainRemote := ""
+	if strings.Contains(o.remote,"/") {
+		p := strings.Split(o.remote,"/")
+		f := p[len(p)-1]
+		mainRemote = o.remote[:len(o.remote)-len(f)] + stringToSha1( f ) + binSuffix
+	} else {
+		mainRemote = stringToSha1( o.remote ) + binSuffix
+	}
 	var newChunks []fs.Object
 	var err error
 
@@ -1871,6 +1901,7 @@ func (f *Fs) copyOrMove(ctx context.Context, o *Object, remote string, do copyMo
 	// Ignore possible temporary chunks being created by parallel operations.
 	for _, chunk := range o.chunks {
 		chunkRemote := chunk.Remote()
+		fs.Debugf("copyOrMove","chunkRemote %s mainRemote %s",chunkRemote, mainRemote)
 		if !strings.HasPrefix(chunkRemote, mainRemote) {
 			err = fmt.Errorf("invalid chunk name %q", chunkRemote)
 			break
@@ -1909,7 +1940,8 @@ func (f *Fs) copyOrMove(ctx context.Context, o *Object, remote string, do copyMo
 	switch f.opt.MetaFormat {
 	case "simplejson":
 		//CCHUNKER: ? name file move/rename
-		metadata, err = marshalSimpleJSON(ctx, newObj.size, len(newChunks), newObj.ModTime(ctx).UnixNano(), remote, md5, sha1, o.xactID)
+		//TODO: mount full path
+		metadata, err = marshalSimpleJSON(ctx, newObj.size, len(newChunks), newObj.ModTime(ctx).UnixNano(), oFile, md5, sha1, o.xactID)
 		if err == nil {
 			metaInfo := f.wrapInfo(metaObject, "", int64(len(metadata)))
 			err = newObj.main.Update(ctx, bytes.NewReader(metadata), metaInfo)

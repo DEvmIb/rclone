@@ -1,6 +1,7 @@
 //TODO: not backward compatible json.
 //TODO: test rename move
 //TODO: src must have checksums
+//TODO: convert dirs to sum
 // Package chunker provides wrappers for Fs and Object which split large files in chunks
 package chunkerc
 
@@ -317,6 +318,13 @@ func NewFs(ctx context.Context, name, rpath string, m configmap.Mapper) (fs.Fs, 
 	// test if sha1 file exist. meta is always on!
 	// BUG: error on create
 	//CCHUNKER: newfs
+	// FIXME: adding slash other way
+	if remotePath != "" {
+		if remotePath[:1] != "/" {
+			remotePath = "/" + remotePath
+		}
+	}
+
 	if strings.Contains(remotePath, "/") {
 		t:=remotePath[len(remotePath)-1:]
 		fs.Debugf("NewFs","last: %s",t)
@@ -802,6 +810,7 @@ func (f *Fs) ListR(ctx context.Context, dir string, callback fs.ListRCallback) (
 func (f *Fs) processEntries(ctx context.Context, origEntries fs.DirEntries, dirPath string) (newEntries fs.DirEntries, err error) {
 	//CCHUNKER: 1 processEntries
 	fs.Debugf("proccessEntries","go")
+	fs.Debugf("proccessEntries","dirPath: %s", dirPath)
 	var sortedEntries fs.DirEntries
 	if f.dirSort {
 		// sort entries so that meta objects go before their chunks
@@ -832,8 +841,15 @@ func (f *Fs) processEntries(ctx context.Context, origEntries fs.DirEntries, dirP
 				// FIXME: better extention detection
 				if strings.Contains(remote, binSuffix) {
 					fileName, _ := object.readRealFilename(ctx)
-					fs.Debugf("RealFilename",fileName)
-					object.remote = fileName
+					old := object.remote
+					new := fileName
+					if strings.Contains(old,"/") {
+						p := strings.Split(old, "/")
+						f := p[len(p)-1]
+						new = old[:len(old)-len(f)] + fileName
+					}
+					fs.Debugf("proccessEntries","readRealFilename old: %s new: %s", object.remote,new)
+					object.remote = new
 				}
 				
 				byRemote[remote] = object
@@ -1260,6 +1276,8 @@ func (o *Object) readXactID(ctx context.Context) (xactID string, err error) {
 func (f *Fs) put(
 	ctx context.Context, in io.Reader, src fs.ObjectInfo, remote string, options []fs.OpenOption,
 	basePut putFn, action string, target fs.Object) (obj fs.Object, err error) {
+	fs.Debugf("put","remote: %s action: %s root: %s",remote, action, f.root)
+	println("%#v",target)
 	// Perform consistency checks
 	if err := f.forbidChunk(src, remote); err != nil {
 		return nil, fmt.Errorf("%s refused: %w", action, err)
@@ -1280,9 +1298,19 @@ func (f *Fs) put(
 		}
 	}
 	//CCHUNKER: !check err
-	sum := stringToSha1(remote) + binSuffix
+	//TODO: fixing mount uses full path
+	sum := ""
+	if strings.Contains(remote,"/") {
+		p := strings.Split(remote,"/")
+		f := p[len(p)-1]
+		sum = remote[:len(remote)-len(f)] + stringToSha1(f) + binSuffix
+		fs.Debugf("put","fixing mount from %s to %s",remote,sum)
+	} else {
+		sum = stringToSha1(remote) + binSuffix
+	}
+	
 	//fmt.Printf("remote: %s sum: %s\n",remote,sum)
-	fs.Debugf(remote,"remote: %s sum: %s\n",remote, sum)
+	fs.Debugf("put","remote: %s sum: %s\n",remote, sum)
 	// Prepare to upload
 	c := f.newChunkingReader(src)
 	wrapIn := c.wrapStream(ctx, in, src)
@@ -1322,6 +1350,7 @@ func (f *Fs) put(
 			chunkRemote = sum
 		}
 		info := f.wrapInfo(src, chunkRemote, size)
+		fs.Debugf("put","root: %s",info.fs.root)
 		// Refill chunkLimit and let basePut repeatedly call chunkingReader.Read()
 		// CCHUNKER: random size
 		c.chunkLimit = size //c.chunkSize
@@ -1447,7 +1476,14 @@ func (f *Fs) put(
 	case "simplejson":
 		c.updateHashes()
 		// CCHUNKER: ? name of file put
-		metadata, err = marshalSimpleJSON(ctx, sizeTotal, len(c.chunks), src.ModTime(ctx).UnixNano(), src.String(), c.md5, c.sha1, xactID)
+		// BUG: subfolder name in meta2
+		f := remote
+		// TODO: workarround for mount using full path
+		if strings.Contains(f,"/") {
+			n := strings.Split(f,"/")
+			f = n[len(n)-1]
+		}
+		metadata, err = marshalSimpleJSON(ctx, sizeTotal, len(c.chunks), src.ModTime(ctx).UnixNano(), f, c.md5, c.sha1, xactID)
 	}
 	if err == nil {
 		//CCHUNKER: removed baseRemote

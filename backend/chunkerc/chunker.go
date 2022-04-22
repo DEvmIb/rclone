@@ -88,7 +88,7 @@ const (
 	tempSuffixFormat = `_%04s`
 	tempSuffixRegStr = `_([0-9a-z]{4,9})`
 	tempSuffixRegOld = `\.\.tmp_([0-9]{10,13})`
-	binSuffix = ".!§$"
+	binSuffix = ".§§§"
 )
 
 var (
@@ -331,16 +331,19 @@ func NewFs(ctx context.Context, name, rpath string, m configmap.Mapper) (fs.Fs, 
 			}
 			fs.Debugf("NewFs", "sha1 path: %s", nremotePath)
 			_, testErr := cache.Get(ctx, baseName+nremotePath)
-			//fs.Debugf("NewFs","err test file: %s",testErr)
+			fs.Debugf("NewFs","err test file: %s",testErr)
 			if testErr == fs.ErrorIsFile {
 				fs.Debugf("NewFs","rpath: %s -> %s",rpath,nrpath)
 				fs.Debugf("NewFs","remotePath: %s -> %s",remotePath,nremotePath)
 				remotePath=nremotePath
 				baseFs, err = cache.Get(ctx, baseName+remotePath)
-				if rpath != "" {
+				if nrpath != "" {
 					rpath=nrpath
 				}
 				//f.root = nrpath
+			} else {
+				fs.Debugf("NewFs","krpath: %s -> %s",rpath,rpath)
+				fs.Debugf("NewFs","kremotePath: %s -> %s",remotePath,remotePath)
 			}
 		}
 	}
@@ -761,7 +764,6 @@ func (f *Fs) newXactID(ctx context.Context, filePath string) (xactID string, err
 func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err error) {
 	fs.Debugf("List dir: ","%s",dir)
 	entries, err = f.base.List(ctx, dir)
-	fs.Debugf("List dir: ","%s",entries)
 	if err != nil {
 		return nil, err
 	}
@@ -1154,8 +1156,21 @@ func (o *Object) readMetadata(ctx context.Context) error {
 
 
 func stringToSha1(in string) string {
+	fs.Debugf("stringToSha1","in: %s",in)
+	c := in
+	if len(binSuffix) > 0 && len(c) > len(binSuffix) {
+		fs.Debugf("stringToSha1","be in")
+		co := c[len(c)-len(binSuffix):]
+		fs.Debugf("stringToSha1",co)
+		if co == binSuffix {
+			fs.Debugf("stringToSha1","be in 2")
+			c = c[:len(c)-len(binSuffix)]
+			return c
+		}
+	}
+	fs.Debugf("stringToSha1","using: %s",c)
 	h := sha1.New()
-	h.Write([]byte(in))
+	h.Write([]byte(c))
 	sum := hex.EncodeToString(h.Sum(nil))
 	return sum
 }
@@ -1605,6 +1620,7 @@ func (c *chunkingReader) dummyRead(in io.Reader, size int64) error {
 
 // rollback removes uploaded temporary chunks
 func (c *chunkingReader) rollback(ctx context.Context, metaObject fs.Object) {
+	fs.Debugf("rollback","go")
 	if metaObject != nil {
 		c.chunks = append(c.chunks, metaObject)
 	}
@@ -1616,6 +1632,7 @@ func (c *chunkingReader) rollback(ctx context.Context, metaObject fs.Object) {
 }
 
 func (f *Fs) removeOldChunks(ctx context.Context, remote string) {
+	fs.Debugf("removeOldChunks","go")
 	oldFsObject, err := f.NewObject(ctx, remote)
 	if err == nil {
 		oldObject := oldFsObject.(*Object)
@@ -1717,6 +1734,7 @@ func (f *Fs) Rmdir(ctx context.Context, dir string) error {
 // active chunks but also all hidden temporary chunks in the directory.
 //
 func (f *Fs) Purge(ctx context.Context, dir string) error {
+	fs.Debugf("purge","go")
 	do := f.base.Features().Purge
 	if do == nil {
 		return fs.ErrorCantPurge
@@ -1759,6 +1777,7 @@ func (f *Fs) Purge(ctx context.Context, dir string) error {
 // the `delete hidden` flag above or at least the user has been warned.
 //
 func (o *Object) Remove(ctx context.Context) (err error) {
+	fs.Debugf("Remove", "go")
 	if err := o.f.forbidChunk(o, o.Remote()); err != nil {
 		// operations.Move can still call Remove if chunker's Move refuses
 		// to corrupt file in hard mode. Hence, refuse to Remove, too.

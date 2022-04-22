@@ -91,7 +91,7 @@ const (
 	tempSuffixFormat = `_%04s`
 	tempSuffixRegStr = `_([0-9a-z]{4,9})`
 	tempSuffixRegOld = `\.\.tmp_([0-9]{10,13})`
-	binSuffix = ".§§§"
+	bin_Suffix = ".§§§"
 )
 
 var (
@@ -334,10 +334,10 @@ func NewFs(ctx context.Context, name, rpath string, m configmap.Mapper) (fs.Fs, 
 			t := strings.Split(remotePath, "/")
 			fi := t[len(t)-1]
 			fs.Debugf("NewFs","file: %s",fi)
-			nremotePath := remotePath[:len(remotePath)-len(fi)] + stringToSha1(fi) + binSuffix
+			nremotePath := remotePath[:len(remotePath)-len(fi)] + stringToSha1(fi) + binSuffix()
 			nrpath := ""
 			if rpath != "" {
-				nrpath = rpath[:len(rpath)-len(fi)] + stringToSha1(fi) + binSuffix
+				nrpath = rpath[:len(rpath)-len(fi)] + stringToSha1(fi) + binSuffix()
 			}
 			fs.Debugf("NewFs", "sha1 path: %s", nremotePath)
 			_, testErr := cache.Get(ctx, baseName+nremotePath)
@@ -841,7 +841,7 @@ func (f *Fs) processEntries(ctx context.Context, origEntries fs.DirEntries, dirP
 				object := f.newObject("", entry, nil)
 				// FIXME: error checking
 				// FIXME: better extention detection
-				if strings.Contains(remote, binSuffix) {
+				if strings.Contains(remote, binSuffix()) {
 					fileName, _ := object.readRealFilename(ctx)
 					old := object.remote
 					new := fileName
@@ -955,7 +955,7 @@ func (f *Fs) processEntries(ctx context.Context, origEntries fs.DirEntries, dirP
 //
 func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 	fs.Debugf("NewObject","remote: %s", remote)
-	return f.scanObject(ctx, stringToSha1(remote) + binSuffix, false)
+	return f.scanObject(ctx, stringToSha1(remote) + binSuffix(), false)
 }
 
 // scanObject is like NewObject with optional quick scan mode.
@@ -1172,17 +1172,21 @@ func (o *Object) readMetadata(ctx context.Context) error {
 	return nil
 }
 
+func binSuffix() string {
+	return "" //bin_Suffix
+}
 
 func stringToSha1(in string) string {
+	return in
 	fs.Debugf("stringToSha1","in: %s",in)
 	c := in
-	if len(binSuffix) > 0 && len(c) > len(binSuffix) {
+	if len(binSuffix()) > 0 && len(c) > len(binSuffix()) {
 		fs.Debugf("stringToSha1","be in")
-		co := c[len(c)-len(binSuffix):]
+		co := c[len(c)-len(binSuffix()):]
 		fs.Debugf("stringToSha1",co)
-		if co == binSuffix {
+		if co == binSuffix() {
 			fs.Debugf("stringToSha1","be in 2")
-			c = c[:len(c)-len(binSuffix)]
+			c = c[:len(c)-len(binSuffix())]
 			return c
 		}
 	}
@@ -1305,10 +1309,10 @@ func (f *Fs) put(
 	if strings.Contains(remote,"/") {
 		p := strings.Split(remote,"/")
 		f := p[len(p)-1]
-		sum = remote[:len(remote)-len(f)] + stringToSha1(f) + binSuffix
+		sum = remote[:len(remote)-len(f)] + stringToSha1(f) + binSuffix()
 		fs.Debugf("put","fixing mount from %s to %s",remote,sum)
 	} else {
-		sum = stringToSha1(remote) + binSuffix
+		sum = stringToSha1(remote) + binSuffix()
 	}
 	
 	//fmt.Printf("remote: %s sum: %s\n",remote,sum)
@@ -1852,16 +1856,16 @@ func (f *Fs) copyOrMove(ctx context.Context, o *Object, remote string, do copyMo
 	//fs.Debugf("copyOrMove","remote: %s opName: %s",remote,opName)
 	// TODO: full path mount
 	oFile := ""
-	if len(remote) > len(binSuffix) {
-		if remote[len(remote) - len(binSuffix):] != binSuffix {
+	if len(remote) > len(binSuffix()) {
+		if remote[len(remote) - len(binSuffix()):] != binSuffix() {
 			if strings.Contains(remote,"/") {
 				p := strings.Split(remote,"/")
 				f := p[len(p)-1]
 				oFile = f
-				remote = remote[:len(remote)-len(f)] + stringToSha1(f) + binSuffix
+				remote = remote[:len(remote)-len(f)] + stringToSha1(f) + binSuffix()
 			} else {
 				oFile = remote
-				remote = stringToSha1(remote) + binSuffix
+				remote = stringToSha1(remote) + binSuffix()
 			}
 		}
 	}
@@ -1892,9 +1896,9 @@ func (f *Fs) copyOrMove(ctx context.Context, o *Object, remote string, do copyMo
 	if strings.Contains(o.remote,"/") {
 		p := strings.Split(o.remote,"/")
 		f := p[len(p)-1]
-		mainRemote = o.remote[:len(o.remote)-len(f)] + stringToSha1( f ) + binSuffix
+		mainRemote = o.remote[:len(o.remote)-len(f)] + stringToSha1( f ) + binSuffix()
 	} else {
-		mainRemote = stringToSha1( o.remote ) + binSuffix
+		mainRemote = stringToSha1( o.remote ) + binSuffix()
 	}
 	var newChunks []fs.Object
 	var err error

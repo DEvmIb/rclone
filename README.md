@@ -5,15 +5,15 @@ for the original repo of rclone goto: [https://github.com/rclone/rclone]
 
 currently rclone patches from me:
 * chunkerc - a crypt and privacy friendly chunker
-      - remote files named sha1sum of filename + chunker data. so no longer long filenames problem on crypt
-      - files will automatic splitted at random size. same files uploaded to other folder has other size
-      - every file has modtime from upload date
-      - original filename and modtime is saved to metadata file
-      - cache should be used for performance
+      * remote files named sha1sum of filename + chunker data. so no longer long filenames problem on crypt
+      * files will automatic splitted at random size. same files uploaded to other folder has other size
+      * every file has modtime from upload date
+      * original filename and modtime is saved to metadata file
+      * cache should be used for performance
 * m2mfs
-      - creating an union with all disk avaiable to the system and copy every file only to the most 2 free disks
+      * creating an union with all disk avaiable to the system and copy every file only to the most 2 free disks
 * cryptdb backend
-      - long filenames bigger than 255 will be written to local db (plain files, mysql planning)
+      * long filenames bigger than 255 will be written to local db (plain files, mysql planning)
 
 #
 

@@ -4,6 +4,11 @@
 for the original repo of rclone goto: [https://github.com/rclone/rclone]
 
 currently rclone patches from me:
+
+* Invidious - readonly client
+
+    - status: only in my brain atm but he said it should not to be complicated
+
 * WIP chunkerc - crypt and privacy friendly chunker
 
     - remote files named sha1sum of filename + chunker data. so no longer long filenames problem on crypt

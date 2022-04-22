@@ -4,12 +4,13 @@
 for the original repo of rclone goto: [https://github.com/rclone/rclone]
 
 currently rclone patches from me:
-* chunkerc
+* WIP chunkerc - crypt and privacy friendly chunker
 
     - remote files named sha1sum of filename + chunker data. so no longer long filenames problem on crypt
     - files will automatic splitted at random size. same files uploaded to other folder has other size
     - every file has modtime from upload date
-    - original filename 
+    - original filename and modtime is saved in metadata
+    - status: works but testing testing testing.....
 
 * m2mfs
 

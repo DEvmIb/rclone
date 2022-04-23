@@ -680,6 +680,7 @@ func (f *Fs) makeChunkName(filePath string, chunkNo int, ctrlType, xactID string
 // active chunk - the returned xactID is ""
 // temporary chunk - the xactID is a non-empty string
 func (f *Fs) parseChunkName(filePath string) (parentPath string, chunkNo int, ctrlType, xactID string) {
+	fs.Debugf("parseChunkName","go %s", filePath)
 	dir, name := path.Split(filePath)
 	match := f.nameRegexp.FindStringSubmatch(name)
 	if match == nil || match[1] == "" {
@@ -1141,7 +1142,7 @@ func (f *Fs) scanObject(ctx context.Context, remote string, quickScan bool) (fs.
 // readMetadata will attempt to parse object as composite with fallback
 // to non-chunked representation if the attempt fails.
 func (o *Object) readMetadata(ctx context.Context) error {
-	fs.Debugf("readMetadata","go")
+	fs.Debugf("readMetadata","go %s", o.remote)
 	// return quickly if metadata is absent or has been already cached
 	if !o.f.useMeta {
 		o.isFull = true
@@ -1158,6 +1159,7 @@ func (o *Object) readMetadata(ctx context.Context) error {
 	fs.Debugf("readMetadata", "not cached")
 	// validate metadata
 	metaObject := o.main
+	fs.Debugf("readMetadata", "not cached %s", metaObject.Remote())
 	if metaObject.Size() > maxMetadataSize {
 		if o.unsure {
 			// this is not metadata but a foreign object
@@ -1258,10 +1260,10 @@ func (o *Object) readRealFilename(ctx context.Context) (fileName string, err err
 		fs.Debugf("readRealFilename","sha1 %s", sha1)
 	}
 	// if filename has already been read and cached return it now
-	if fileNameCache[sha1] != "" {
+	/* if fileNameCache[sha1] != "" {
 		fs.Debugf("readRealFilename","cached from map")
 		return fileNameCache[sha1], nil
-	}
+	} */
 	if o.filename != "" {
 		fs.Debugf("readRealFilename","cached")
 		return o.filename, nil
@@ -2052,6 +2054,7 @@ func (f *Fs) copyOrMove(ctx context.Context, o *Object, remote string, do copyMo
 type copyMoveFn func(context.Context, fs.Object, string) (fs.Object, error)
 
 func (f *Fs) okForServerSide(ctx context.Context, src fs.Object, opName string) (obj *Object, md5, sha1 string, ok bool) {
+	fs.Debugf("okForServerSide","go")
 	var diff string
 	obj, ok = src.(*Object)
 
@@ -2481,7 +2484,7 @@ func (o *Object) UnWrap() fs.Object {
 
 // Open opens the file for read.  Call Close() on the returned io.ReadCloser
 func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (rc io.ReadCloser, err error) {
-	fs.Debugf("Open","Go")
+	fs.Debugf("Open","Go %s", o.remote)
 	if err := o.readMetadata(ctx); err != nil {
 		// refuse to open unsupported format
 		return nil, fmt.Errorf("can't open: %w", err)

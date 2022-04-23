@@ -5,6 +5,8 @@
 //TODO: rclone stopped before synced wrong names after restart (vfs)
 //TODO: found a bug in json blafoo... on testing the code an changed json file chunker claims bad file
 // Package chunker provides wrappers for Fs and Object which split large files in chunks
+// TODO: rsync loops all dirs?
+// TODO: metafile cacheable vfs as hidden file?
 package chunkerc
 
 import (
@@ -274,6 +276,34 @@ If meta format is set to "none", rename transactions will always be used.
 This method is EXPERIMENTAL, don't use on production systems.`,
 				},
 			},
+		}, {
+			Name:     "renamefilesremote",
+			Advanced: false,
+			Default:  false,
+			Help:     `Upload files to remote as sha1sum and keep original filename in Metafile`,
+			Examples: []fs.OptionExample{
+				{
+					Value: "true",
+					Help:  "Rename rename files. slow on first listing directorys. using dir-cache-time recommed on mounts.",
+				}, {
+					Value: "false",
+					Help: `keep original name an make listing faster`,
+				},
+			},
+		}, {
+			Name:     "usemetamodt",
+			Advanced: false,
+			Default:  false,
+			Help:     `Write Modtime to Metafile and use current Date on uploaded files.`,
+			Examples: []fs.OptionExample{
+				{
+					Value: "true",
+					Help:  "write modtime to metafile. slow on first listing directorys. using dir-cache-time recommed on mounts.",
+				}, {
+					Value: "false",
+					Help: `write modtime to remote file`,
+				},
+			},
 		}},
 	})
 }
@@ -327,7 +357,7 @@ func NewFs(ctx context.Context, name, rpath string, m configmap.Mapper) (fs.Fs, 
 		}
 	}
 
-	if strings.Contains(remotePath, "/") {
+	if strings.Contains(remotePath, "/") && opt.RenameFilesRemote {
 		t:=remotePath[len(remotePath)-1:]
 		fs.Debugf("NewFs","last: %s",t)
 		if t != "/" {
@@ -419,6 +449,8 @@ type Options struct {
 	HashType     string        `config:"hash_type"`
 	FailHard     bool          `config:"fail_hard"`
 	Transactions string        `config:"transactions"`
+	RenameFilesRemote bool		`config:"renamefilesremote"`
+	UseMetaModt bool	`config:"usemetamodt"`
 }
 
 // Fs represents a wrapped fs.Fs
@@ -841,7 +873,7 @@ func (f *Fs) processEntries(ctx context.Context, origEntries fs.DirEntries, dirP
 				object := f.newObject("", entry, nil)
 				// FIXME: error checking
 				// FIXME: better extention detection
-				if strings.Contains(remote, binSuffix()) {
+				if strings.Contains(remote, binSuffix()) && f.opt.RenameFilesRemote {
 					fileName, _ := object.readRealFilename(ctx)
 					old := object.remote
 					new := fileName
@@ -955,7 +987,11 @@ func (f *Fs) processEntries(ctx context.Context, origEntries fs.DirEntries, dirP
 //
 func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 	fs.Debugf("NewObject","remote: %s", remote)
-	return f.scanObject(ctx, stringToSha1(remote) + binSuffix(), false)
+	if f.opt.RenameFilesRemote {
+		return f.scanObject(ctx, stringToSha1(remote) + binSuffix(), false)
+	} else {
+		return f.scanObject(ctx, remote, false)
+	}
 }
 
 // scanObject is like NewObject with optional quick scan mode.
@@ -1307,13 +1343,15 @@ func (f *Fs) put(
 	//CCHUNKER: !check err
 	//TODO: fixing mount uses full path
 	sum := ""
-	if strings.Contains(remote,"/") {
+	if strings.Contains(remote,"/") && f.opt.RenameFilesRemote {
 		p := strings.Split(remote,"/")
 		f := p[len(p)-1]
 		sum = remote[:len(remote)-len(f)] + stringToSha1(f) + binSuffix()
 		fs.Debugf("put","fixing mount from %s to %s",remote,sum)
-	} else {
+	} else if f.opt.RenameFilesRemote {
 		sum = stringToSha1(remote) + binSuffix()
+	} else {
+		sum = remote
 	}
 	
 	//fmt.Printf("remote: %s sum: %s\n",remote,sum)
@@ -1857,7 +1895,7 @@ func (f *Fs) copyOrMove(ctx context.Context, o *Object, remote string, do copyMo
 	//fs.Debugf("copyOrMove","remote: %s opName: %s",remote,opName)
 	// TODO: full path mount
 	oFile := ""
-	if len(remote) > len(binSuffix()) {
+	if len(remote) > len(binSuffix()) && f.opt.RenameFilesRemote {
 		if remote[len(remote) - len(binSuffix()):] != binSuffix() {
 			if strings.Contains(remote,"/") {
 				p := strings.Split(remote,"/")
@@ -1869,6 +1907,8 @@ func (f *Fs) copyOrMove(ctx context.Context, o *Object, remote string, do copyMo
 				remote = stringToSha1(remote) + binSuffix()
 			}
 		}
+	} else {
+		oFile = remote
 	}
 	
 	fs.Debugf("copyOrMove","remote: %s opName: %s",remote,opName)
@@ -1894,12 +1934,14 @@ func (f *Fs) copyOrMove(ctx context.Context, o *Object, remote string, do copyMo
 	fs.Debugf("copyOrMove","mainRemote %s", o.remote)
 	// TODO: full path fix
 	mainRemote := ""
-	if strings.Contains(o.remote,"/") {
+	if strings.Contains(o.remote,"/") && f.opt.RenameFilesRemote {
 		p := strings.Split(o.remote,"/")
 		f := p[len(p)-1]
 		mainRemote = o.remote[:len(o.remote)-len(f)] + stringToSha1( f ) + binSuffix()
-	} else {
+	} else if f.opt.RenameFilesRemote {
 		mainRemote = stringToSha1( o.remote ) + binSuffix()
+	} else {
+		mainRemote = o.remote
 	}
 	var newChunks []fs.Object
 	var err error
@@ -2328,8 +2370,14 @@ func (o *Object) Storable() bool {
 func (o *Object) ModTime(ctx context.Context) time.Time {
 	//CCHUNKER: return mod from meta
 	//fmt.Printf("%#v\r\n\r\n", o.mainChunk())
-	o.readMetadata(ctx)
-	return time.Unix(0,o.modt)
+	if o.f.opt.UseMetaModt {
+		fs.Debugf("func ModTime","Modtime Meta enabled")
+		o.readMetadata(ctx)
+		return time.Unix(0,o.modt)
+	} else {
+		fs.Debugf("func ModTime","Modtime Meta disabled")
+		return o.mainChunk().ModTime(ctx)
+	}	
 }
 // SetModTime sets the modification time of the file
 func (o *Object) SetModTime(ctx context.Context, mtime time.Time) error {
@@ -2593,7 +2641,12 @@ func (oi *ObjectInfo) Size() int64 {
 func (oi *ObjectInfo) ModTime(ctx context.Context) time.Time {
 	//CCHUNKER: write random modt 
 	//fmt.Printf("REMOTE() %#v\r\n", oi.fs)
-	return time.Now()
+	if oi.fs.opt.UseMetaModt {
+		return time.Now()
+	} else {
+		return oi.src.ModTime(ctx)
+	}
+	
 }
 
 // Hash returns the selected checksum of the wrapped file

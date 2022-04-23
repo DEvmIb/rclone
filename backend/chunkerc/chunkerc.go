@@ -1,3 +1,4 @@
+//FIXME: vfs minimal, off not setting modtime
 //TODO: not backward compatible json.
 //TODO: test rename move
 //TODO: src must have checksums
@@ -93,7 +94,7 @@ const (
 	tempSuffixFormat = `_%04s`
 	tempSuffixRegStr = `_([0-9a-z]{4,9})`
 	tempSuffixRegOld = `\.\.tmp_([0-9]{10,13})`
-	bin_Suffix = ".§§§"
+	bin_Suffix = ".chunkerc"
 )
 
 var (
@@ -1224,20 +1225,22 @@ func stringToSha1(in string) string {
 	//return in
 	fs.Debugf("stringToSha1","in: %s",in)
 	c := in
-	if len(binSuffix()) > 0 && len(c) > len(binSuffix()) {
-		fs.Debugf("stringToSha1","be in")
-		co := c[len(c)-len(binSuffix()):]
-		fs.Debugf("stringToSha1",co)
-		if co == binSuffix() {
+	//if len(binSuffix()) > 0 && len(c) > len(binSuffix()) {
+		//fs.Debugf("stringToSha1","be in")
+		//co := c[len(c)-len(binSuffix()):]
+		//fs.Debugf("stringToSha1",co)
+		if strings.Contains(in, binSuffix()) {
 			fs.Debugf("stringToSha1","be in 2")
 			c = c[:len(c)-len(binSuffix())]
+			fs.Debugf("stringToSha1","out: %s",c)
 			return c
 		}
-	}
+	//}
 	fs.Debugf("stringToSha1","using: %s",c)
 	h := sha1.New()
 	h.Write([]byte(c))
 	sum := hex.EncodeToString(h.Sum(nil))
+	fs.Debugf("stringToSha1","out: %s",sum)
 	return sum
 }
 
@@ -1346,6 +1349,7 @@ func (f *Fs) put(
 	ctx context.Context, in io.Reader, src fs.ObjectInfo, remote string, options []fs.OpenOption,
 	basePut putFn, action string, target fs.Object) (obj fs.Object, err error) {
 	fs.Debugf("put","remote: %s action: %s root: %s",remote, action, f.root)
+	fs.Debugf("put","%s",src.ModTime(ctx))
 	println("%#v",target)
 	// Perform consistency checks
 	if err := f.forbidChunk(src, remote); err != nil {
@@ -1929,8 +1933,8 @@ func (f *Fs) copyOrMove(ctx context.Context, o *Object, remote string, do copyMo
 	//fs.Debugf("copyOrMove","remote: %s opName: %s",remote,opName)
 	// TODO: full path mount
 	oFile := ""
-	if len(remote) > len(binSuffix()) && f.opt.RenameFilesRemote {
-		if remote[len(remote) - len(binSuffix()):] != binSuffix() {
+	if ! strings.Contains(remote, binSuffix()) && f.opt.RenameFilesRemote {
+		//if remote[len(remote) - len(binSuffix()):] != binSuffix() {
 			if strings.Contains(remote,"/") {
 				p := strings.Split(remote,"/")
 				f := p[len(p)-1]
@@ -1940,7 +1944,7 @@ func (f *Fs) copyOrMove(ctx context.Context, o *Object, remote string, do copyMo
 				oFile = remote
 				remote = stringToSha1(remote) + binSuffix()
 			}
-		}
+		//}
 	} else {
 		oFile = remote
 	}
@@ -1968,11 +1972,11 @@ func (f *Fs) copyOrMove(ctx context.Context, o *Object, remote string, do copyMo
 	fs.Debugf("copyOrMove","mainRemote %s", o.remote)
 	// TODO: full path fix
 	mainRemote := ""
-	if strings.Contains(o.remote,"/") && f.opt.RenameFilesRemote {
+	if ! strings.Contains(o.remote, binSuffix()) && strings.Contains(o.remote,"/") && f.opt.RenameFilesRemote {
 		p := strings.Split(o.remote,"/")
 		f := p[len(p)-1]
 		mainRemote = o.remote[:len(o.remote)-len(f)] + stringToSha1( f ) + binSuffix()
-	} else if f.opt.RenameFilesRemote {
+	} else if ! strings.Contains(o.remote, binSuffix()) && f.opt.RenameFilesRemote {
 		mainRemote = stringToSha1( o.remote ) + binSuffix()
 	} else {
 		mainRemote = o.remote
@@ -2024,6 +2028,8 @@ func (f *Fs) copyOrMove(ctx context.Context, o *Object, remote string, do copyMo
 	case "simplejson":
 		//CCHUNKER: ? name file move/rename
 		//TODO: mount full path
+		
+		// FIXME: support remotes not supporting modtime when metatime is enabled
 		metadata, err = marshalSimpleJSON(ctx, newObj.size, len(newChunks), newObj.ModTime(ctx).UnixNano(), oFile, md5, sha1, o.xactID)
 		if err == nil {
 			metaInfo := f.wrapInfo(metaObject, "", int64(len(metadata)))
@@ -2415,6 +2421,7 @@ func (o *Object) ModTime(ctx context.Context) time.Time {
 }
 // SetModTime sets the modification time of the file
 func (o *Object) SetModTime(ctx context.Context, mtime time.Time) error {
+	fs.Debugf("setModTime", "go")
 	if err := o.readMetadata(ctx); err != nil {
 		return err // refuse to act on unsupported format
 	}
@@ -2673,9 +2680,11 @@ func (oi *ObjectInfo) Size() int64 {
 
 // ModTime returns the modification time
 func (oi *ObjectInfo) ModTime(ctx context.Context) time.Time {
+	fs.Debugf("ModTime","go")
 	//CCHUNKER: write random modt 
 	//fmt.Printf("REMOTE() %#v\r\n", oi.fs)
 	if oi.fs.opt.UseMetaModt {
+		//fs.Debugf("ModTime","%s",oi.fs.opt.UseMetaModt)
 		//CCHUNKER: randome modt on remote file if modt enabled
 		start := int64(0)
 		end := time.Now().UnixNano()

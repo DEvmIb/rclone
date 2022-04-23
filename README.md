@@ -5,15 +5,12 @@ for the original repo of rclone goto: [https://github.com/rclone/rclone]
 
 currently rclone patches from me:
 
-* Invidious - readonly client
-
-    - status: only in my brain atm but he said it should not to be complicated
 
 * WIP chunkerc - crypt and privacy friendly chunker
 
     - remote files named sha1sum of filename + chunker data. so no longer long filenames problem on crypt
     - files will automatic splitted at random size. same files uploaded to other folder has other size
-    - every file has modtime from upload date
+    - when supported by remote the modtime is randomized between 1970-now
     - original filename and modtime is saved in metadata
     - status: works but testing testing testing.....
 

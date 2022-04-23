@@ -102,6 +102,10 @@ var (
 	tempSuffixRegexp = regexp.MustCompile(`^` + tempSuffixRegStr + `$`)
 )
 
+// Filename Caching when meta is enabled for them.
+// sha1 always the same so cache it in memory
+var fileNameCache = make(map[string]string)
+
 // Normally metadata is a small piece of JSON (about 100-300 bytes).
 // The size of valid metadata must never exceed this limit.
 // Current maximum provides a reasonable room for future extensions.
@@ -306,18 +310,6 @@ This method is EXPERIMENTAL, don't use on production systems.`,
 					Help: `write modtime to remote file`,
 				},
 			},
-		}, {
-			Name:     "minsplit",
-			Required: true,
-			Advanced: false,
-			Default:  2,
-			Help:     `how small a chunk can be calculated. recalculated after every chunk send to remote. formula: min=DataLeft / minsplit. chunksize=between Dataleft/min. max chunksize will be`,
-			Examples: []fs.OptionExample{
-				{
-					Value: "2",
-					Help:  "splits file at 2 parts with random size",
-				},
-			},
 		}},
 	})
 }
@@ -465,7 +457,6 @@ type Options struct {
 	Transactions string        `config:"transactions"`
 	RenameFilesRemote bool		`config:"renamefilesremote"`
 	UseMetaModt bool	`config:"usemetamodt"`
-	MinSplit int64 `config:"minsplit"`
 }
 
 // Fs represents a wrapped fs.Fs
@@ -1155,6 +1146,7 @@ func (o *Object) readMetadata(ctx context.Context) error {
 		o.isFull = true
 	}
 	if o.isFull {
+		fs.Debugf("readMetadata", "is cached")
 		return nil
 	}
 	if !o.isComposite() && !o.unsure {
@@ -1162,7 +1154,7 @@ func (o *Object) readMetadata(ctx context.Context) error {
 		o.isFull = true
 		return nil
 	}
-
+	fs.Debugf("readMetadata", "not cached")
 	// validate metadata
 	metaObject := o.main
 	if metaObject.Size() > maxMetadataSize {
@@ -1251,8 +1243,24 @@ func stringToSha1(in string) string {
 
 // get real filename from meta
 func (o *Object) readRealFilename(ctx context.Context) (fileName string, err error) {
-	// if filename has already been read and cahced return it now
+	fs.Debugf("readRealFilename","go %s", o.remote)
+	
+	// get only the sha1 sum
+	sha1 := ""
+	if o.f.opt.UseMetaModt {
+		p := strings.Split(o.remote,"/")
+		f := p[len(p)-1]
+		f = f[:len(f)-len(binSuffix())]
+		sha1 = f
+		fs.Debugf("readRealFilename","sha1 %s", sha1)
+	}
+	// if filename has already been read and cached return it now
+	if fileNameCache[sha1] != "" {
+		fs.Debugf("readRealFilename","cached from map")
+		return fileNameCache[sha1], nil
+	}
 	if o.filename != "" {
+		fs.Debugf("readRealFilename","cached")
 		return o.filename, nil
 	}
 	if o.main == nil {
@@ -1270,7 +1278,7 @@ func (o *Object) readRealFilename(ctx context.Context) (fileName string, err err
 	if err != nil {
 		return "", err
 	}
-
+	fs.Debugf("readRealFilename","non cached")
 	switch o.f.opt.MetaFormat {
 	case "simplejson":
 		if len(data) > maxMetadataSizeWritten {
@@ -1283,14 +1291,17 @@ func (o *Object) readRealFilename(ctx context.Context) (fileName string, err err
 		}
 		fileName = *metadata.FileName
 	}
+	fileNameCache[sha1] = fileName
 	o.filename = fileName
 	return fileName, nil
 }
 
 // readXactID returns the transaction ID stored in the passed metadata object
 func (o *Object) readXactID(ctx context.Context) (xactID string, err error) {
+	fs.Debugf("readXactID","go")
 	// if xactID has already been read and cahced return it now
 	if o.xIDCached {
+		fs.Debugf("readXactID","cached")
 		return o.xactID, nil
 	}
 	// Avoid reading metadata for backends that don't use xactID to identify permanent chunks
@@ -1312,7 +1323,7 @@ func (o *Object) readXactID(ctx context.Context) (xactID string, err error) {
 	if err != nil {
 		return "", err
 	}
-
+	fs.Debugf("readXactID","non cached")
 	switch o.f.opt.MetaFormat {
 	case "simplejson":
 		if len(data) > maxMetadataSizeWritten {

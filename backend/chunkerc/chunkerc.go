@@ -278,6 +278,7 @@ This method is EXPERIMENTAL, don't use on production systems.`,
 			},
 		}, {
 			Name:     "renamefilesremote",
+			Required: true,
 			Advanced: false,
 			Default:  false,
 			Help:     `Upload files to remote as sha1sum and keep original filename in Metafile`,
@@ -292,6 +293,7 @@ This method is EXPERIMENTAL, don't use on production systems.`,
 			},
 		}, {
 			Name:     "usemetamodt",
+			Required: true,
 			Advanced: false,
 			Default:  false,
 			Help:     `Write Modtime to Metafile and use current Date on uploaded files.`,
@@ -302,6 +304,18 @@ This method is EXPERIMENTAL, don't use on production systems.`,
 				}, {
 					Value: "false",
 					Help: `write modtime to remote file`,
+				},
+			},
+		}, {
+			Name:     "minsplit",
+			Required: true,
+			Advanced: false,
+			Default:  2,
+			Help:     `how small a chunk can be calculated. recalculated after every chunk send to remote. formula: min=DataLeft / minsplit. chunksize=between Dataleft/min. max chunksize will be`,
+			Examples: []fs.OptionExample{
+				{
+					Value: "2",
+					Help:  "splits file at 2 parts with random size",
 				},
 			},
 		}},
@@ -451,6 +465,7 @@ type Options struct {
 	Transactions string        `config:"transactions"`
 	RenameFilesRemote bool		`config:"renamefilesremote"`
 	UseMetaModt bool	`config:"usemetamodt"`
+	MinSplit int64 `config:"minsplit"`
 }
 
 // Fs represents a wrapped fs.Fs
@@ -1372,16 +1387,24 @@ func (f *Fs) put(
 		return nil, errXact
 	}
 
+
 	// Transfer chunks data
+	
 	for c.chunkNo = 0; !c.done; c.chunkNo++ {
 		if c.chunkNo > maxSafeChunkNumber {
 			return nil, ErrChunkOverflow
 		}
-		// CCHUNKER: random size
+		// CCHUNKER: random split
 		// keep in mind. a single file in a folder can be calculated to real size. [ all pieces ] - [ crypt overhead ] - [ metafile ] = ! real filesize can be assumed !
 		max:=c.sizeTotal
-		min:=c.sizeTotal/2
-		use:=rand.Int63n(max-min+1) + min
+		min:=c.sizeTotal / 2
+		use:=rand.Int63n(max - min + 1) + min
+		if use > int64(f.opt.ChunkSize) {
+			//too big randomize chunksize
+			min := int64(f.opt.ChunkSize) / 2
+			use = rand.Int63n(int64(f.opt.ChunkSize) - min + 1 ) + min
+		}
+		
 		//CCHUNKER: new remote name
 		tempRemote := f.makeChunkName(sum, c.chunkNo, "", xactID)
 		size := use
@@ -2642,7 +2665,12 @@ func (oi *ObjectInfo) ModTime(ctx context.Context) time.Time {
 	//CCHUNKER: write random modt 
 	//fmt.Printf("REMOTE() %#v\r\n", oi.fs)
 	if oi.fs.opt.UseMetaModt {
-		return time.Now()
+		//CCHUNKER: randome modt on remote file if modt enabled
+		start := int64(0)
+		end := time.Now().UnixNano()
+		res := rand.Int63n(end - start + 1) + start
+		return time.Unix(0,res)
+		//return time.Now()
 	} else {
 		return oi.src.ModTime(ctx)
 	}

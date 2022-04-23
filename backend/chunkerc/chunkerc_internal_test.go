@@ -679,7 +679,7 @@ func testMetadataInput(t *testing.T, f *Fs) {
 		}
 	}
 
-	metaData, err := marshalSimpleJSON(ctx, 3, 1, "", "", "")
+	metaData, err := marshalSimpleJSON(ctx, 3, 1, 0, "", "", "", "")
 	require.NoError(t, err)
 	todaysMeta := string(metaData)
 	runSubtest(todaysMeta, "today")

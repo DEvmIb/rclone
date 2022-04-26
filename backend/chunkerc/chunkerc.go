@@ -854,14 +854,14 @@ func (f *Fs) processEntries(ctx context.Context, origEntries fs.DirEntries, dirP
 	fs.Debugf("proccessEntries","go")
 	fs.Debugf("proccessEntries","dirPath: %s", dirPath)
 	var sortedEntries fs.DirEntries
-	if f.dirSort {
+	//if f.dirSort {
 		// sort entries so that meta objects go before their chunks
 		sortedEntries = make(fs.DirEntries, len(origEntries))
 		copy(sortedEntries, origEntries)
 		sort.Sort(sortedEntries)
-	} else {
-		sortedEntries = origEntries
-	}
+	//} else {
+	//	sortedEntries = origEntries
+	//}
 
 	byRemote := make(map[string]*Object)
 	badEntry := make(map[string]bool)
@@ -1142,7 +1142,7 @@ func (f *Fs) scanObject(ctx context.Context, remote string, quickScan bool) (fs.
 // readMetadata will attempt to parse object as composite with fallback
 // to non-chunked representation if the attempt fails.
 func (o *Object) readMetadata(ctx context.Context) error {
-	fs.Debugf("readMetadata","go %s", o.remote)
+	fs.Debugf("readMetadata","go %s %s", o.remote, o.modt)
 	// return quickly if metadata is absent or has been already cached
 	if !o.f.useMeta {
 		o.isFull = true
@@ -1159,7 +1159,7 @@ func (o *Object) readMetadata(ctx context.Context) error {
 	fs.Debugf("readMetadata", "not cached")
 	// validate metadata
 	metaObject := o.main
-	fs.Debugf("readMetadata", "not cached %s", metaObject.Remote())
+	fs.Debugf("readMetadata", "not cached %s %s %s",o.remote, metaObject.Remote(), metaObject.ModTime(ctx))
 	if metaObject.Size() > maxMetadataSize {
 		if o.unsure {
 			// this is not metadata but a foreign object
@@ -1260,10 +1260,10 @@ func (o *Object) readRealFilename(ctx context.Context) (fileName string, err err
 		fs.Debugf("readRealFilename","sha1 %s", sha1)
 	}
 	// if filename has already been read and cached return it now
-	/* if fileNameCache[sha1] != "" {
+	if fileNameCache[sha1] != "" {
 		fs.Debugf("readRealFilename","cached from map")
 		return fileNameCache[sha1], nil
-	} */
+	}
 	if o.filename != "" {
 		fs.Debugf("readRealFilename","cached")
 		return o.filename, nil
@@ -1406,15 +1406,15 @@ func (f *Fs) put(
 
 
 	// Transfer chunks data
-	
+	max:=c.sizeTotal
+	min:=c.sizeTotal / 2
 	for c.chunkNo = 0; !c.done; c.chunkNo++ {
 		if c.chunkNo > maxSafeChunkNumber {
 			return nil, ErrChunkOverflow
 		}
 		// CCHUNKER: random split
 		// keep in mind. a single file in a folder can be calculated to real size. [ all pieces ] - [ crypt overhead ] - [ metafile ] = ! real filesize can be assumed !
-		max:=c.sizeTotal
-		min:=c.sizeTotal / 2
+		
 		use:=rand.Int63n(max - min + 1) + min
 		if use > int64(f.opt.ChunkSize) {
 			//too big randomize chunksize

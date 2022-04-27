@@ -1231,7 +1231,8 @@ func (o *Object) readOFileName(ctx context.Context) (oFileName string, err error
 func (f *Fs) put(
 	ctx context.Context, in io.Reader, src fs.ObjectInfo, remote string, options []fs.OpenOption,
 	basePut putFn, action string, target fs.Object) (obj fs.Object, err error) {
-	fs.Debugf("put", "go src.Remote(): %s remote: %s action: %s target: %s",src.Remote(),remote,action,target)
+	fs.Debugf("m3","in: %s",src.ModTime(ctx))
+	fs.Debugf("put", "go src: %s remote: %s action: %s target: %s",src.Remote(),remote,action,target)
 	// Perform consistency checks
 	if err := f.forbidChunk(src, remote); err != nil {
 		return nil, fmt.Errorf("%s refused: %w", action, err)
@@ -1443,6 +1444,7 @@ func (f *Fs) put(
 	case "simplejson":
 		c.updateHashes()
 		_, file := path.Split(baseRemote)
+		fs.Debugf("m3","file %s %s",file, )
 		metadata, err = marshalSimpleJSON(ctx, sizeTotal, len(c.chunks), file, src.ModTime(ctx).UnixNano(), c.md5, c.sha1, xactID)
 	}
 	if err == nil {

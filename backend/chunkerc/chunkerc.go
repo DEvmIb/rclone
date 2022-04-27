@@ -1,5 +1,6 @@
 // FIXME: copy file always is overwritten
 // FIXME: meta with cache.get possible?
+// FIXME: modtime broken
 // Package chunker provides wrappers for Fs and Object which split large files in chunks
 package chunkerc
 
@@ -1414,7 +1415,6 @@ func (f *Fs) put(
 				chunkRemote = dir + "chunkerc_" + stringToSha1(file) + chunkRemote[len(remote):]
 				fs.Debugf("put short_names","rename new: %s -> %s",chunk.Remote(), chunkRemote)
 			}
-
 			chunkMoved, errMove := f.baseMove(ctx, chunk, chunkRemote, delFailed)
 			if errMove != nil {
 				return nil, errMove
@@ -1987,6 +1987,9 @@ func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object,
 // If it isn't possible then return fs.ErrorCantMove
 func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
 	fs.Debugf("Move", "start")
+	fs.Debugf("m1","%s",remote)
+	dir, file := path.Split(remote)
+	remote = dir + "chunkerc_" + stringToSha1(file)
 	baseMove := func(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
 		return f.baseMove(ctx, src, remote, delNever)
 	}
@@ -2000,6 +2003,13 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 // baseMove chains to the wrapped Move or simulates it by Copy+Delete
 func (f *Fs) baseMove(ctx context.Context, src fs.Object, remote string, delMode int) (fs.Object, error) {
 	fs.Debugf("baseMove","go %s %s %s",src.Remote(), remote, delMode)
+	/* dir, file := path.Split(remote)
+	if f.opt.ShortNames {
+		if !strings.HasPrefix(file,"chunkerc_") {
+			remote = dir + "chunkerc_" + stringToSha1(file)
+		}
+	} */
+	fs.Debugf("baseMove","next %s %s %s",src.Remote(), remote, delMode)
 	var (
 		dest fs.Object
 		err  error
@@ -2271,10 +2281,19 @@ func (o *Object) ModTime(ctx context.Context) time.Time {
 
 // SetModTime sets the modification time of the file
 func (o *Object) SetModTime(ctx context.Context, mtime time.Time) error {
+	fs.Debugf("m2","m2")
 	if err := o.readMetadata(ctx); err != nil {
 		return err // refuse to act on unsupported format
 	}
-	return o.mainChunk().SetModTime(ctx, mtime)
+	if o.f.opt.MetaModTime {
+		start := int64(0)
+		end := time.Now().UnixNano()
+		res := rand.Int63n(end - start + 1) + start
+		return o.mainChunk().SetModTime(ctx, time.Unix(0,res))
+	} else {
+		return o.mainChunk().SetModTime(ctx, mtime)
+	}
+	
 }
 
 // Hash returns the selected checksum of the file.
@@ -2743,7 +2762,7 @@ func stringToSha1(in string) string {
 	h := sha1.New()
 	h.Write([]byte(c))
 	sum := hex.EncodeToString(h.Sum(nil))
-	fs.Debugf("stringToSha1","out: %s",sum)
+	fs.Debugf("stringToSha1","in: %s out: %s",in, sum)
 	return sum
 }
 

@@ -1,13 +1,6 @@
-//FIXME: vfs minimal, off not setting modtime
-//TODO: not backward compatible json.
-//TODO: test rename move
-//TODO: src must have checksums
-//TODO: convert dirs to sum
-//TODO: rclone stopped before synced wrong names after restart (vfs)
-//TODO: found a bug in json blafoo... on testing the code an changed json file chunker claims bad file
+// FIXME: copy file always is overwritten
+// FIXME: meta with cache.get possible?
 // Package chunker provides wrappers for Fs and Object which split large files in chunks
-// TODO: rsync loops all dirs?
-// TODO: metafile cacheable vfs as hidden file?
 package chunkerc
 
 import (
@@ -94,7 +87,6 @@ const (
 	tempSuffixFormat = `_%04s`
 	tempSuffixRegStr = `_([0-9a-z]{4,9})`
 	tempSuffixRegOld = `\.\.tmp_([0-9]{10,13})`
-	bin_Suffix = ".chunkerc"
 )
 
 var (
@@ -102,10 +94,6 @@ var (
 	ctrlTypeRegexp   = regexp.MustCompile(`^` + ctrlTypeRegStr + `$`)
 	tempSuffixRegexp = regexp.MustCompile(`^` + tempSuffixRegStr + `$`)
 )
-
-// Filename Caching when meta is enabled for them.
-// sha1 always the same so cache it in memory
-var fileNameCache = make(map[string]string)
 
 // Normally metadata is a small piece of JSON (about 100-300 bytes).
 // The size of valid metadata must never exceed this limit.
@@ -185,6 +173,21 @@ If chunk number has less digits than the number of hashes, it is left-padded by 
 If there are more digits in the number, they are left as is.
 Possible chunk files are ignored if their name does not match given format.`,
 		}, {
+			Name:     "short_names",
+			Default:  false,
+			Help: `rename remote files to shorter names. this allow long names
+when using remotes like crypt with 255 char limit remotes. filenames will be
+tracked in the metafile. there is no limit in length when using without mount
+like cat/rcat.`,
+		}, {
+			Name:     "meta_modt",
+			Default:  false,
+			Help: `save modTime to meta and randomize remote files`,
+		}, {
+			Name:     "split_random",
+			Default:  false,
+			Help: `split files ad random size. same file on other folder or reupload will always change the chunk size.`,
+		}, {
 			Name:     "start_from",
 			Advanced: true,
 			Hide:     fs.OptionHideCommandLine,
@@ -209,7 +212,7 @@ Requires hash type "none".`,
 				Value: "simplejson",
 				Help: `Simple JSON supports hash sums and chunk validation.
 
-It has the following fields: ver, size, nchunks, modT, fileName, md5, sha1.`,
+It has the following fields: ver, size, nchunks, md5, sha1.`,
 			}},
 		}, {
 			Name:     "hash_type",
@@ -281,43 +284,13 @@ If meta format is set to "none", rename transactions will always be used.
 This method is EXPERIMENTAL, don't use on production systems.`,
 				},
 			},
-		}, {
-			Name:     "renamefilesremote",
-			Required: true,
-			Advanced: false,
-			Default:  false,
-			Help:     `Upload files to remote as sha1sum and keep original filename in Metafile`,
-			Examples: []fs.OptionExample{
-				{
-					Value: "true",
-					Help:  "Rename rename files. slow on first listing directorys. using dir-cache-time recommed on mounts.",
-				}, {
-					Value: "false",
-					Help: `keep original name an make listing faster`,
-				},
-			},
-		}, {
-			Name:     "usemetamodt",
-			Required: true,
-			Advanced: false,
-			Default:  false,
-			Help:     `Write Modtime to Metafile and use current Date on uploaded files.`,
-			Examples: []fs.OptionExample{
-				{
-					Value: "true",
-					Help:  "write modtime to metafile. slow on first listing directorys. using dir-cache-time recommed on mounts.",
-				}, {
-					Value: "false",
-					Help: `write modtime to remote file`,
-				},
-			},
 		}},
 	})
 }
 
 // NewFs constructs an Fs from the path, container:path
 func NewFs(ctx context.Context, name, rpath string, m configmap.Mapper) (fs.Fs, error) {
-	fs.Debugf("NewFs","go")
+	fs.Debugf("NewFs","start name: %s rpath: %s",name, rpath)
 	// Parse config into Options struct
 	opt := new(Options)
 	err := configstruct.Set(m, opt)
@@ -338,66 +311,33 @@ func NewFs(ctx context.Context, name, rpath string, m configmap.Mapper) (fs.Fs, 
 		return nil, fmt.Errorf("failed to parse remote %q to wrap: %w", remote, err)
 	}
 	// Look for a file first
-	
 	remotePath := fspath.JoinRootPath(basePath, rpath)
-	fs.Debugf("NewFs","basePath: %s baseName: %s remotePath: %s rpath: %s name: %s",basePath, baseName, remotePath, rpath, name)
+
+	// if we use short_names we have to manipulate
+	if opt.ShortNames {
+		fs.Debugf("NewFs","Shortnames < remotePath: %s baseName: %s rpath: %s", remotePath, baseName, rpath)
+		dir, file := path.Split(remotePath)
+		sha1file := stringToSha1(file)
+		test :=  dir + "chunkerc_" + sha1file
+		_ , err := cache.Get(ctx, test)
+		fs.Debugf("NewFs","test result: %s test: %s", err, test)
+		if err == fs.ErrorIsFile {
+			fs.Debugf("NewFs","remotePath changed from %s to %s", remotePath, test)
+			remotePath = test
+			//dir, _ := path.Split(rpath)
+			//rpath_new := dir + "chunkerc_" + sha1file
+			//fs.Debugf("NewFs","rpath changed from %s to %s", rpath, rpath_new)
+			//rpath = rpath_new
+		}
+	}
+
 	baseFs, err := cache.Get(ctx, baseName+remotePath)
-	fs.Debugf("NewFs","baseFs: %s",baseFs)
-	fs.Debugf("NewFs","baseFs err: %s",err)
 	if err != fs.ErrorIsFile && err != nil {
 		return nil, fmt.Errorf("failed to make remote %q to wrap: %w", baseName+remotePath, err)
 	}
 	if !operations.CanServerSideMove(baseFs) {
 		return nil, errors.New("can't use chunker on a backend which doesn't support server-side move or copy")
 	}
-	fs.Debugf("NewFs","nex")
-
-
-
-	// test if sha1 file exist. meta is always on!
-	// BUG: error on create
-	//CCHUNKER: newfs
-	// FIXME: adding slash other way
-	if remotePath != "" {
-		if remotePath[:1] != "/" {
-			remotePath = "/" + remotePath
-		}
-	}
-
-	if strings.Contains(remotePath, "/") && opt.RenameFilesRemote {
-		t:=remotePath[len(remotePath)-1:]
-		fs.Debugf("NewFs","last: %s",t)
-		if t != "/" {
-			t := strings.Split(remotePath, "/")
-			fi := t[len(t)-1]
-			fs.Debugf("NewFs","file: %s",fi)
-			nremotePath := remotePath[:len(remotePath)-len(fi)] + stringToSha1(fi) + binSuffix()
-			nrpath := ""
-			if rpath != "" {
-				nrpath = rpath[:len(rpath)-len(fi)] + stringToSha1(fi) + binSuffix()
-			}
-			fs.Debugf("NewFs", "sha1 path: %s", nremotePath)
-			_, testErr := cache.Get(ctx, baseName+nremotePath)
-			fs.Debugf("NewFs","err test file: %s",testErr)
-			if testErr == fs.ErrorIsFile {
-				fs.Debugf("NewFs","rpath: %s -> %s",rpath,nrpath)
-				fs.Debugf("NewFs","remotePath: %s -> %s",remotePath,nremotePath)
-				remotePath=nremotePath
-				baseFs, err = cache.Get(ctx, baseName+remotePath)
-				if nrpath != "" {
-					rpath=nrpath
-				}
-				//f.root = nrpath
-			} else {
-				fs.Debugf("NewFs","krpath: %s -> %s",rpath,rpath)
-				fs.Debugf("NewFs","kremotePath: %s -> %s",remotePath,remotePath)
-			}
-		}
-	}
-	
-
-
-
 
 	f := &Fs{
 		base: baseFs,
@@ -412,7 +352,6 @@ func NewFs(ctx context.Context, name, rpath string, m configmap.Mapper) (fs.Fs, 
 		return nil, err
 	}
 
-	
 	// Handle the tricky case detected by FsMkdir/FsPutFiles/FsIsFile
 	// when `rpath` points to a composite multi-chunk file without metadata,
 	// i.e. `rpath` does not exist in the wrapped remote, but chunker
@@ -423,7 +362,6 @@ func NewFs(ctx context.Context, name, rpath string, m configmap.Mapper) (fs.Fs, 
 		_, testErr := cache.Get(ctx, baseName+firstChunkPath)
 		if testErr == fs.ErrorIsFile {
 			err = testErr
-			fs.Debugf("NewFs","blubb")
 		}
 	}
 
@@ -456,8 +394,9 @@ type Options struct {
 	HashType     string        `config:"hash_type"`
 	FailHard     bool          `config:"fail_hard"`
 	Transactions string        `config:"transactions"`
-	RenameFilesRemote bool		`config:"renamefilesremote"`
-	UseMetaModt bool	`config:"usemetamodt"`
+	ShortNames   bool			`config:"short_names"`
+	MetaModTime  bool			`config:"meta_modt"`
+	RandomSize	bool			`config:"random_size"`
 }
 
 // Fs represents a wrapped fs.Fs
@@ -680,7 +619,6 @@ func (f *Fs) makeChunkName(filePath string, chunkNo int, ctrlType, xactID string
 // active chunk - the returned xactID is ""
 // temporary chunk - the xactID is a non-empty string
 func (f *Fs) parseChunkName(filePath string) (parentPath string, chunkNo int, ctrlType, xactID string) {
-	fs.Debugf("parseChunkName","go %s", filePath)
 	dir, name := path.Split(filePath)
 	match := f.nameRegexp.FindStringSubmatch(name)
 	if match == nil || match[1] == "" {
@@ -812,9 +750,10 @@ func (f *Fs) newXactID(ctx context.Context, filePath string) (xactID string, err
 // rclone that will tell List to reveal hidden chunks.
 //
 func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err error) {
-	fs.Debugf("List dir: ","%s",dir)
+	fs.Debugf("List","go")
 	entries, err = f.base.List(ctx, dir)
 	if err != nil {
+		fs.Debugf("List","err: %s",err)
 		return nil, err
 	}
 	return f.processEntries(ctx, entries, dir)
@@ -837,7 +776,7 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 // Don't implement this unless you have a more efficient way
 // of listing recursively than doing a directory traversal.
 func (f *Fs) ListR(ctx context.Context, dir string, callback fs.ListRCallback) (err error) {
-	fs.Debugf("ListR","ListR")
+	fs.Debugf("ListR","start")
 	do := f.base.Features().ListR
 	return do(ctx, dir, func(entries fs.DirEntries) error {
 		newEntries, err := f.processEntries(ctx, entries, dir)
@@ -850,18 +789,16 @@ func (f *Fs) ListR(ctx context.Context, dir string, callback fs.ListRCallback) (
 
 // processEntries assembles chunk entries into composite entries
 func (f *Fs) processEntries(ctx context.Context, origEntries fs.DirEntries, dirPath string) (newEntries fs.DirEntries, err error) {
-	//CCHUNKER: 1 processEntries
-	fs.Debugf("proccessEntries","go")
-	fs.Debugf("proccessEntries","dirPath: %s", dirPath)
+	fs.Debugf("processEntries", "start")
 	var sortedEntries fs.DirEntries
-	//if f.dirSort {
+	if f.dirSort {
 		// sort entries so that meta objects go before their chunks
 		sortedEntries = make(fs.DirEntries, len(origEntries))
 		copy(sortedEntries, origEntries)
 		sort.Sort(sortedEntries)
-	//} else {
-	//	sortedEntries = origEntries
-	//}
+	} else {
+		sortedEntries = origEntries
+	}
 
 	byRemote := make(map[string]*Object)
 	badEntry := make(map[string]bool)
@@ -873,27 +810,18 @@ func (f *Fs) processEntries(ctx context.Context, origEntries fs.DirEntries, dirP
 		switch entry := dirOrObject.(type) {
 		case fs.Object:
 			remote := entry.Remote()
-			fs.Debugf("proccessEntries","proccess: %s",remote)
 			mainRemote, chunkNo, ctrlType, xactID := f.parseChunkName(remote)
-			fs.Debugf("proccessEntries","mainRemote: %s",mainRemote)
 			if mainRemote == "" {
 				// this is meta object or standalone file
 				object := f.newObject("", entry, nil)
-				// FIXME: error checking
-				// FIXME: better extention detection
-				if strings.Contains(remote, binSuffix()) && f.opt.RenameFilesRemote {
-					fileName, _ := object.readRealFilename(ctx)
-					old := object.remote
-					new := fileName
-					if strings.Contains(old,"/") {
-						p := strings.Split(old, "/")
-						f := p[len(p)-1]
-						new = old[:len(old)-len(f)] + fileName
-					}
-					fs.Debugf("proccessEntries","readRealFilename old: %s new: %s", object.remote,new)
-					object.remote = new
+				if f.opt.ShortNames {
+					fs.Debugf("processEntries","object.remote: %s",object.remote)
+					dir, _ := path.Split(object.remote)
+					of,  _ := object.readOFileName(ctx)
+					fs.Debugf("processEntries","ShortNames object.remote: %s -> %s",object.remote, dir + of)
+					object.remote = dir + of
 				}
-				
+				//object.remote = "test.txt"
 				byRemote[remote] = object
 				tempEntries = append(tempEntries, object)
 				if f.useNoRename {
@@ -904,7 +832,6 @@ func (f *Fs) processEntries(ctx context.Context, origEntries fs.DirEntries, dirP
 				}
 				break
 			}
-			fs.Debugf("nex","nex")
 			// this is some kind of chunk
 			// metobject should have been created above if present
 			mainObject := byRemote[mainRemote]
@@ -975,8 +902,10 @@ func (f *Fs) processEntries(ctx context.Context, origEntries fs.DirEntries, dirP
 				continue
 			}
 		}
+		
 		newEntries = append(newEntries, entry)
 	}
+
 	if f.dirSort {
 		sort.Sort(newEntries)
 	}
@@ -994,19 +923,13 @@ func (f *Fs) processEntries(ctx context.Context, origEntries fs.DirEntries, dirP
 // but opening even a small file can be slow on some backends.
 //
 func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
-	fs.Debugf("NewObject","remote: %s", remote)
-	if f.opt.RenameFilesRemote {
-		return f.scanObject(ctx, stringToSha1(remote) + binSuffix(), false)
-	} else {
-		return f.scanObject(ctx, remote, false)
-	}
+	return f.scanObject(ctx, remote, false)
 }
 
 // scanObject is like NewObject with optional quick scan mode.
 // The quick mode avoids directory requests other than `List`,
 // ignores non-chunked objects and skips chunk size checks.
 func (f *Fs) scanObject(ctx context.Context, remote string, quickScan bool) (fs.Object, error) {
-	fs.Debugf("scanObject","remote: %s", remote)
 	if err := f.forbidChunk(false, remote); err != nil {
 		return nil, fmt.Errorf("can't access: %w", err)
 	}
@@ -1142,13 +1065,11 @@ func (f *Fs) scanObject(ctx context.Context, remote string, quickScan bool) (fs.
 // readMetadata will attempt to parse object as composite with fallback
 // to non-chunked representation if the attempt fails.
 func (o *Object) readMetadata(ctx context.Context) error {
-	fs.Debugf("readMetadata","go %s %s", o.remote, o.modt)
 	// return quickly if metadata is absent or has been already cached
 	if !o.f.useMeta {
 		o.isFull = true
 	}
 	if o.isFull {
-		fs.Debugf("readMetadata", "is cached")
 		return nil
 	}
 	if !o.isComposite() && !o.unsure {
@@ -1156,10 +1077,9 @@ func (o *Object) readMetadata(ctx context.Context) error {
 		o.isFull = true
 		return nil
 	}
-	fs.Debugf("readMetadata", "not cached")
+
 	// validate metadata
 	metaObject := o.main
-	fs.Debugf("readMetadata", "not cached %s %s %s",o.remote, metaObject.Remote(), metaObject.ModTime(ctx))
 	if metaObject.Size() > maxMetadataSize {
 		if o.unsure {
 			// this is not metadata but a foreign object
@@ -1208,9 +1128,7 @@ func (o *Object) readMetadata(ctx context.Context) error {
 		o.md5 = metaInfo.md5
 		o.sha1 = metaInfo.sha1
 		o.xactID = metaInfo.xactID
-		// CCHUNKER: read meta
-		o.modt = metaInfo.modT
-		o.filename = metaInfo.fileName
+		o.oModTime = metaInfo.omodTime
 	}
 
 	o.isFull = true // cache results
@@ -1218,95 +1136,10 @@ func (o *Object) readMetadata(ctx context.Context) error {
 	return nil
 }
 
-func binSuffix() string {
-	//return "" //bin_Suffix
-	return bin_Suffix
-}
-
-func stringToSha1(in string) string {
-	//return in
-	fs.Debugf("stringToSha1","in: %s",in)
-	c := in
-	//if len(binSuffix()) > 0 && len(c) > len(binSuffix()) {
-		//fs.Debugf("stringToSha1","be in")
-		//co := c[len(c)-len(binSuffix()):]
-		//fs.Debugf("stringToSha1",co)
-		if strings.Contains(in, binSuffix()) {
-			fs.Debugf("stringToSha1","be in 2")
-			c = c[:len(c)-len(binSuffix())]
-			fs.Debugf("stringToSha1","out: %s",c)
-			return c
-		}
-	//}
-	fs.Debugf("stringToSha1","using: %s",c)
-	h := sha1.New()
-	h.Write([]byte(c))
-	sum := hex.EncodeToString(h.Sum(nil))
-	fs.Debugf("stringToSha1","out: %s",sum)
-	return sum
-}
-
-// get real filename from meta
-func (o *Object) readRealFilename(ctx context.Context) (fileName string, err error) {
-	fs.Debugf("readRealFilename","go %s", o.remote)
-	
-	// get only the sha1 sum
-	sha1 := ""
-	if o.f.opt.UseMetaModt {
-		p := strings.Split(o.remote,"/")
-		f := p[len(p)-1]
-		f = f[:len(f)-len(binSuffix())]
-		sha1 = f
-		fs.Debugf("readRealFilename","sha1 %s", sha1)
-	}
-	// if filename has already been read and cached return it now
-	if fileNameCache[sha1] != "" {
-		fs.Debugf("readRealFilename","cached from map")
-		return fileNameCache[sha1], nil
-	}
-	if o.filename != "" {
-		fs.Debugf("readRealFilename","cached")
-		return o.filename, nil
-	}
-	if o.main == nil {
-		return "", errors.New("readRealFilename requires valid metaobject")
-	}
-	if o.main.Size() > maxMetadataSize {
-		return "", nil // this was likely not a metadata object, return empty xactID but don't throw error
-	}
-	reader, err := o.main.Open(ctx)
-	if err != nil {
-		return "", err
-	}
-	data, err := ioutil.ReadAll(reader)
-	_ = reader.Close() // ensure file handle is freed on windows
-	if err != nil {
-		return "", err
-	}
-	fs.Debugf("readRealFilename","non cached")
-	switch o.f.opt.MetaFormat {
-	case "simplejson":
-		if len(data) > maxMetadataSizeWritten {
-			return "", nil // this was likely not a metadata object, return empty xactID but don't throw error
-		}
-		var metadata metaSimpleJSON
-		err = json.Unmarshal(data, &metadata)
-		if err != nil {
-			return "", nil // this was likely not a metadata object, return empty xactID but don't throw error
-		}
-		fileName = *metadata.FileName
-	}
-	fileNameCache[sha1] = fileName
-	o.filename = fileName
-	return fileName, nil
-}
-
 // readXactID returns the transaction ID stored in the passed metadata object
 func (o *Object) readXactID(ctx context.Context) (xactID string, err error) {
-	fs.Debugf("readXactID","go")
 	// if xactID has already been read and cahced return it now
 	if o.xIDCached {
-		fs.Debugf("readXactID","cached")
 		return o.xactID, nil
 	}
 	// Avoid reading metadata for backends that don't use xactID to identify permanent chunks
@@ -1328,7 +1161,7 @@ func (o *Object) readXactID(ctx context.Context) (xactID string, err error) {
 	if err != nil {
 		return "", err
 	}
-	fs.Debugf("readXactID","non cached")
+
 	switch o.f.opt.MetaFormat {
 	case "simplejson":
 		if len(data) > maxMetadataSizeWritten {
@@ -1346,13 +1179,48 @@ func (o *Object) readXactID(ctx context.Context) (xactID string, err error) {
 	return xactID, nil
 }
 
+func (o *Object) readOFileName(ctx context.Context) (oFileName string, err error) {
+	// if xactID has already been read and cahced return it now
+	if o.oFileName != "" {
+		return o.oFileName, nil
+	}
+	if o.main == nil {
+		return "", errors.New("readOFileName requires valid metaobject")
+	}
+	if o.main.Size() > maxMetadataSize {
+		return "", nil // this was likely not a metadata object, return empty xactID but don't throw error
+	}
+	reader, err := o.main.Open(ctx)
+	if err != nil {
+		return "", err
+	}
+	data, err := ioutil.ReadAll(reader)
+	_ = reader.Close() // ensure file handle is freed on windows
+	if err != nil {
+		return "", err
+	}
+
+	switch o.f.opt.MetaFormat {
+	case "simplejson":
+		if len(data) > maxMetadataSizeWritten {
+			return "", nil // this was likely not a metadata object, return empty xactID but don't throw error
+		}
+		var metadata metaSimpleJSON
+		err = json.Unmarshal(data, &metadata)
+		if err != nil {
+			return "", nil // this was likely not a metadata object, return empty xactID but don't throw error
+		}
+		oFileName = metadata.OFileName
+	}
+	o.oFileName = oFileName
+	return oFileName, nil
+}
+
 // put implements Put, PutStream, PutUnchecked, Update
 func (f *Fs) put(
 	ctx context.Context, in io.Reader, src fs.ObjectInfo, remote string, options []fs.OpenOption,
 	basePut putFn, action string, target fs.Object) (obj fs.Object, err error) {
-	fs.Debugf("put","remote: %s action: %s root: %s",remote, action, f.root)
-	fs.Debugf("put","%s",src.ModTime(ctx))
-	println("%#v",target)
+	fs.Debugf("put", "go src.Remote(): %s remote: %s action: %s target: %s",src.Remote(),remote,action,target)
 	// Perform consistency checks
 	if err := f.forbidChunk(src, remote); err != nil {
 		return nil, fmt.Errorf("%s refused: %w", action, err)
@@ -1372,22 +1240,7 @@ func (f *Fs) put(
 			return nil, fmt.Errorf("refusing to %s: %w", action, err)
 		}
 	}
-	//CCHUNKER: !check err
-	//TODO: fixing mount uses full path
-	sum := ""
-	if strings.Contains(remote,"/") && f.opt.RenameFilesRemote {
-		p := strings.Split(remote,"/")
-		f := p[len(p)-1]
-		sum = remote[:len(remote)-len(f)] + stringToSha1(f) + binSuffix()
-		fs.Debugf("put","fixing mount from %s to %s",remote,sum)
-	} else if f.opt.RenameFilesRemote {
-		sum = stringToSha1(remote) + binSuffix()
-	} else {
-		sum = remote
-	}
-	
-	//fmt.Printf("remote: %s sum: %s\n",remote,sum)
-	fs.Debugf("put","remote: %s sum: %s\n",remote, sum)
+
 	// Prepare to upload
 	c := f.newChunkingReader(src)
 	wrapIn := c.wrapStream(ctx, in, src)
@@ -1398,47 +1251,59 @@ func (f *Fs) put(
 			c.rollback(ctx, metaObject)
 		}
 	}()
-	//baseRemote := remote
-	xactID, errXact := f.newXactID(ctx, sum)
+
+	baseRemote := remote
+	xactID, errXact := f.newXactID(ctx, baseRemote)
 	if errXact != nil {
 		return nil, errXact
 	}
 
-
 	// Transfer chunks data
-	max:=c.sizeTotal
-	min:=c.sizeTotal / 2
+	// useChunkSize := 6
+	if c.fs.opt.RandomSize && c.sizeTotal > 5 {
+		max := c.sizeTotal
+		if int64(f.opt.ChunkSize) < max {
+			max = int64(f.opt.ChunkSize)
+		}
+		min := max / 4
+		fs.Debugf("put","RandomSize total: %s max: %s min: %s",c.sizeTotal, max, min)
+		
+		use:=rand.Int63n(max - min + 1) + min
+		fs.Debugf("put","RandomSize result: %s",use)
+		//panic("ff")
+		c.chunkSize = use
+	}
 	for c.chunkNo = 0; !c.done; c.chunkNo++ {
 		if c.chunkNo > maxSafeChunkNumber {
 			return nil, ErrChunkOverflow
 		}
-		// CCHUNKER: random split
-		// keep in mind. a single file in a folder can be calculated to real size. [ all pieces ] - [ crypt overhead ] - [ metafile ] = ! real filesize can be assumed !
-		
-		use:=rand.Int63n(max - min + 1) + min
-		if use > int64(f.opt.ChunkSize) {
-			//too big randomize chunksize
-			min := int64(f.opt.ChunkSize) / 2
-			use = rand.Int63n(int64(f.opt.ChunkSize) - min + 1 ) + min
+
+		tempRemote := f.makeChunkName(baseRemote, c.chunkNo, "", xactID)
+
+		// short_names
+		if f.opt.ShortNames {
+			fs.Debugf("put","tempRemote %s", tempRemote)
+			dir, file := path.Split(remote)
+			fs.Debugf("put","tempRemote dir: %s file: %s", dir, file)
+			tempRemote = dir + "chunkerc_" + stringToSha1(file) + tempRemote[len(remote):]
+			fs.Debugf("put","tempRemote new %s", tempRemote)
 		}
-		
-		//CCHUNKER: new remote name
-		tempRemote := f.makeChunkName(sum, c.chunkNo, "", xactID)
-		size := use
-		if c.sizeLeft < use {
-			size = c.sizeLeft
+
+		size := c.sizeLeft
+		if size > c.chunkSize {
+			size = c.chunkSize
 		}
 		savedReadCount := c.readCount
+
 		// If a single chunk is expected, avoid the extra rename operation
 		chunkRemote := tempRemote
 		if c.expectSingle && c.chunkNo == 0 && optimizeFirstChunk {
-			chunkRemote = sum
+			chunkRemote = baseRemote
 		}
 		info := f.wrapInfo(src, chunkRemote, size)
-		fs.Debugf("put","root: %s",info.fs.root)
+
 		// Refill chunkLimit and let basePut repeatedly call chunkingReader.Read()
-		// CCHUNKER: random size
-		c.chunkLimit = size //c.chunkSize
+		c.chunkLimit = c.chunkSize
 		// TODO: handle range/limit options
 		chunk, errChunk := basePut(ctx, wrapIn, info, options...)
 		if errChunk != nil {
@@ -1499,13 +1364,12 @@ func (f *Fs) put(
 	// created if forced by consistent hashing or due to unsafe input.
 	if !needMeta && !f.hashAll && f.useMeta {
 		// If previous object was chunked, remove its chunks
-		f.removeOldChunks(ctx, sum)
+		f.removeOldChunks(ctx, baseRemote)
 
 		// Rename single data chunk in place
-		//CCHUNKER: ? not needed always splited 
 		chunk := c.chunks[0]
-		if chunk.Remote() != sum {
-			chunkMoved, errMove := f.baseMove(ctx, chunk, sum, delAlways)
+		if chunk.Remote() != baseRemote {
+			chunkMoved, errMove := f.baseMove(ctx, chunk, baseRemote, delAlways)
 			if errMove != nil {
 				silentlyRemove(ctx, chunk)
 				return nil, errMove
@@ -1526,13 +1390,21 @@ func (f *Fs) put(
 	}
 
 	// If previous object was chunked, remove its chunks
-	f.removeOldChunks(ctx, sum)
+	f.removeOldChunks(ctx, baseRemote)
 
 	if !f.useNoRename {
 		// The transaction suffix will be removed for backends with quick rename operations
 		for chunkNo, chunk := range c.chunks {
-			//CCHUNKER: !move rename
-			chunkRemote := f.makeChunkName(sum, chunkNo, "", "")
+			chunkRemote := f.makeChunkName(baseRemote, chunkNo, "", "")
+
+			// short_names
+			if f.opt.ShortNames {
+				fs.Debugf("put short_names","rename: %s -> %s",chunk.Remote(), chunkRemote)
+				dir, file := path.Split(remote)
+				chunkRemote = dir + "chunkerc_" + stringToSha1(file) + chunkRemote[len(remote):]
+				fs.Debugf("put short_names","rename new: %s -> %s",chunk.Remote(), chunkRemote)
+			}
+
 			chunkMoved, errMove := f.baseMove(ctx, chunk, chunkRemote, delFailed)
 			if errMove != nil {
 				return nil, errMove
@@ -1543,14 +1415,14 @@ func (f *Fs) put(
 	}
 
 	if !f.useMeta {
+		fs.Debugf("FIXME put useMeta","go")
 		// Remove stale metadata, if any
-		//CCHUNKER: old meta remove baseRemote replaced
-		oldMeta, errOldMeta := f.base.NewObject(ctx, sum)
+		oldMeta, errOldMeta := f.base.NewObject(ctx, baseRemote)
 		if errOldMeta == nil {
 			silentlyRemove(ctx, oldMeta)
 		}
 
-		o := f.newObject(sum, nil, c.chunks)
+		o := f.newObject(baseRemote, nil, c.chunks)
 		o.size = sizeTotal
 		return o, nil
 	}
@@ -1560,19 +1432,17 @@ func (f *Fs) put(
 	switch f.opt.MetaFormat {
 	case "simplejson":
 		c.updateHashes()
-		// CCHUNKER: ? name of file put
-		// BUG: subfolder name in meta2
-		f := remote
-		// TODO: workarround for mount using full path
-		if strings.Contains(f,"/") {
-			n := strings.Split(f,"/")
-			f = n[len(n)-1]
-		}
-		metadata, err = marshalSimpleJSON(ctx, sizeTotal, len(c.chunks), src.ModTime(ctx).UnixNano(), f, c.md5, c.sha1, xactID)
+		_, file := path.Split(baseRemote)
+		metadata, err = marshalSimpleJSON(ctx, sizeTotal, len(c.chunks), file, src.ModTime(ctx).UnixNano(), c.md5, c.sha1, xactID)
 	}
 	if err == nil {
-		//CCHUNKER: removed baseRemote
-		metaInfo := f.wrapInfo(src, sum, int64(len(metadata)))
+		baseRemoteShort := baseRemote
+		if f.opt.ShortNames {
+			fs.Debugf("put meta short_names","%s",baseRemote)
+			dir, file := path.Split(baseRemote)
+			baseRemoteShort = dir + "chunkerc_" + stringToSha1(file)	
+		}
+		metaInfo := f.wrapInfo(src, baseRemoteShort, int64(len(metadata)))
 		metaObject, err = basePut(ctx, bytes.NewReader(metadata), metaInfo)
 	}
 	if err != nil {
@@ -1607,10 +1477,8 @@ type chunkingReader struct {
 }
 
 func (f *Fs) newChunkingReader(src fs.ObjectInfo) *chunkingReader {
-	fs.Debugf("newChunkingReader","remote: %s", src.String())
 	c := &chunkingReader{
 		fs:        f,
-		//TODO size
 		chunkSize: int64(f.opt.ChunkSize),
 		sizeTotal: src.Size(),
 	}
@@ -1621,7 +1489,6 @@ func (f *Fs) newChunkingReader(src fs.ObjectInfo) *chunkingReader {
 }
 
 func (c *chunkingReader) wrapStream(ctx context.Context, in io.Reader, src fs.ObjectInfo) io.Reader {
-	fs.Debugf("wrapStream","remote: %s", src.String())
 	baseIn, wrapBack := accounting.UnWrap(in)
 
 	switch {
@@ -1741,7 +1608,6 @@ func (c *chunkingReader) dummyRead(in io.Reader, size int64) error {
 
 // rollback removes uploaded temporary chunks
 func (c *chunkingReader) rollback(ctx context.Context, metaObject fs.Object) {
-	fs.Debugf("rollback","go")
 	if metaObject != nil {
 		c.chunks = append(c.chunks, metaObject)
 	}
@@ -1753,7 +1619,6 @@ func (c *chunkingReader) rollback(ctx context.Context, metaObject fs.Object) {
 }
 
 func (f *Fs) removeOldChunks(ctx context.Context, remote string) {
-	fs.Debugf("removeOldChunks","go")
 	oldFsObject, err := f.NewObject(ctx, remote)
 	if err == nil {
 		oldObject := oldFsObject.(*Object)
@@ -1771,13 +1636,11 @@ func (f *Fs) removeOldChunks(ctx context.Context, remote string) {
 // will return the object and the error, otherwise will return
 // nil and the error
 func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error) {
-	fs.Debugf("Put","go")
 	return f.put(ctx, in, src, src.Remote(), options, f.base.Put, "put", nil)
 }
 
 // PutStream uploads to the remote path with the modTime given of indeterminate size
 func (f *Fs) PutStream(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error) {
-	fs.Debugf("PutStream","go")
 	return f.put(ctx, in, src, src.Remote(), options, f.base.Features().PutStream, "upload", nil)
 }
 
@@ -1857,7 +1720,6 @@ func (f *Fs) Rmdir(ctx context.Context, dir string) error {
 // active chunks but also all hidden temporary chunks in the directory.
 //
 func (f *Fs) Purge(ctx context.Context, dir string) error {
-	fs.Debugf("purge","go")
 	do := f.base.Features().Purge
 	if do == nil {
 		return fs.ErrorCantPurge
@@ -1900,7 +1762,6 @@ func (f *Fs) Purge(ctx context.Context, dir string) error {
 // the `delete hidden` flag above or at least the user has been warned.
 //
 func (o *Object) Remove(ctx context.Context) (err error) {
-	fs.Debugf("Remove", "go")
 	if err := o.f.forbidChunk(o, o.Remote()); err != nil {
 		// operations.Move can still call Remove if chunker's Move refuses
 		// to corrupt file in hard mode. Hence, refuse to Remove, too.
@@ -1932,27 +1793,6 @@ func (o *Object) Remove(ctx context.Context) (err error) {
 // copyOrMove implements copy or move
 func (f *Fs) copyOrMove(ctx context.Context, o *Object, remote string, do copyMoveFn, md5, sha1, opName string) (fs.Object, error) {
 	fs.Debugf("copyOrMove","go")
-	//fs.Debugf("copyOrMove","remote: %s opName: %s",remote,opName)
-	// TODO: full path mount
-	oFile := ""
-	if ! strings.Contains(remote, binSuffix()) && f.opt.RenameFilesRemote {
-		//if remote[len(remote) - len(binSuffix()):] != binSuffix() {
-			if strings.Contains(remote,"/") {
-				p := strings.Split(remote,"/")
-				f := p[len(p)-1]
-				oFile = f
-				remote = remote[:len(remote)-len(f)] + stringToSha1(f) + binSuffix()
-			} else {
-				oFile = remote
-				remote = stringToSha1(remote) + binSuffix()
-			}
-		//}
-	} else {
-		oFile = remote
-	}
-	
-	fs.Debugf("copyOrMove","remote: %s opName: %s",remote,opName)
-	
 	if err := f.forbidChunk(o, remote); err != nil {
 		return nil, fmt.Errorf("can't %s: %w", opName, err)
 	}
@@ -1971,18 +1811,7 @@ func (f *Fs) copyOrMove(ctx context.Context, o *Object, remote string, do copyMo
 	}
 
 	fs.Debugf(o, "%s %d data chunks...", opName, len(o.chunks))
-	fs.Debugf("copyOrMove","mainRemote %s", o.remote)
-	// TODO: full path fix
-	mainRemote := ""
-	if ! strings.Contains(o.remote, binSuffix()) && strings.Contains(o.remote,"/") && f.opt.RenameFilesRemote {
-		p := strings.Split(o.remote,"/")
-		f := p[len(p)-1]
-		mainRemote = o.remote[:len(o.remote)-len(f)] + stringToSha1( f ) + binSuffix()
-	} else if ! strings.Contains(o.remote, binSuffix()) && f.opt.RenameFilesRemote {
-		mainRemote = stringToSha1( o.remote ) + binSuffix()
-	} else {
-		mainRemote = o.remote
-	}
+	mainRemote := o.remote
 	var newChunks []fs.Object
 	var err error
 
@@ -1990,13 +1819,14 @@ func (f *Fs) copyOrMove(ctx context.Context, o *Object, remote string, do copyMo
 	// Ignore possible temporary chunks being created by parallel operations.
 	for _, chunk := range o.chunks {
 		chunkRemote := chunk.Remote()
-		fs.Debugf("copyOrMove","chunkRemote %s mainRemote %s",chunkRemote, mainRemote)
 		if !strings.HasPrefix(chunkRemote, mainRemote) {
 			err = fmt.Errorf("invalid chunk name %q", chunkRemote)
 			break
 		}
 		chunkSuffix := chunkRemote[len(mainRemote):]
+		fs.Debugf("copyOrMove","%s",remote+chunkSuffix)
 		chunkResult, err := do(ctx, chunk, remote+chunkSuffix)
+		fs.Debugf("copyOrMove","%s",chunkResult)
 		if err != nil {
 			break
 		}
@@ -2028,11 +1858,8 @@ func (f *Fs) copyOrMove(ctx context.Context, o *Object, remote string, do copyMo
 	var metadata []byte
 	switch f.opt.MetaFormat {
 	case "simplejson":
-		//CCHUNKER: ? name file move/rename
-		//TODO: mount full path
-		
-		// FIXME: support remotes not supporting modtime when metatime is enabled
-		metadata, err = marshalSimpleJSON(ctx, newObj.size, len(newChunks), newObj.ModTime(ctx).UnixNano(), oFile, md5, sha1, o.xactID)
+		_, file := path.Split(remote)
+		metadata, err = marshalSimpleJSON(ctx, newObj.size, len(newChunks), file, o.ModTime(ctx).UnixNano(), md5, sha1, o.xactID)
 		if err == nil {
 			metaInfo := f.wrapInfo(metaObject, "", int64(len(metadata)))
 			err = newObj.main.Update(ctx, bytes.NewReader(metadata), metaInfo)
@@ -2054,7 +1881,6 @@ func (f *Fs) copyOrMove(ctx context.Context, o *Object, remote string, do copyMo
 type copyMoveFn func(context.Context, fs.Object, string) (fs.Object, error)
 
 func (f *Fs) okForServerSide(ctx context.Context, src fs.Object, opName string) (obj *Object, md5, sha1 string, ok bool) {
-	fs.Debugf("okForServerSide","go")
 	var diff string
 	obj, ok = src.(*Object)
 
@@ -2122,7 +1948,7 @@ func (f *Fs) okForServerSide(ctx context.Context, src fs.Object, opName string) 
 //
 // If it isn't possible then return fs.ErrorCantCopy
 func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
-	fs.Debugf("Copy","Go")
+	fs.Debugf("Copy", "go")
 	baseCopy := f.base.Features().Copy
 	if baseCopy == nil {
 		return nil, fs.ErrorCantCopy
@@ -2156,6 +1982,7 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 
 // baseMove chains to the wrapped Move or simulates it by Copy+Delete
 func (f *Fs) baseMove(ctx context.Context, src fs.Object, remote string, delMode int) (fs.Object, error) {
+	fs.Debugf("baseMove","go %s %s %s",src.Remote(), remote, delMode)
 	var (
 		dest fs.Object
 		err  error
@@ -2280,12 +2107,11 @@ type Object struct {
 	remote    string
 	main      fs.Object   // meta object if file is composite, or wrapped non-chunked file, nil if meta format is 'none'
 	chunks    []fs.Object // active data chunks if file is composite, or wrapped file as a single chunk if meta format is 'none'
-	//CCHUNKER: obj
-	modt      int64	      // modtime file
-	filename  string      // real filename from meta
 	size      int64       // cached total size of chunks in a composite file or -1 for non-chunked files
 	isFull    bool        // true if metadata has been read
 	xIDCached bool        // true if xactID has been read
+	oFileName string		// 
+	oModTime  int64
 	unsure    bool        // true if need to read metadata to detect object type
 	xactID    string      // transaction ID for "norename" or empty string for "renamed" chunks
 	md5       string
@@ -2411,20 +2237,18 @@ func (o *Object) Storable() bool {
 
 // ModTime returns the modification time of the file
 func (o *Object) ModTime(ctx context.Context) time.Time {
-	//CCHUNKER: return mod from meta
-	//fmt.Printf("%#v\r\n\r\n", o.mainChunk())
-	if o.f.opt.UseMetaModt {
+	if o.f.opt.MetaModTime {
 		fs.Debugf("func ModTime","Modtime Meta enabled")
 		o.readMetadata(ctx)
-		return time.Unix(0,o.modt)
+		return time.Unix(0,o.oModTime)
 	} else {
 		fs.Debugf("func ModTime","Modtime Meta disabled")
 		return o.mainChunk().ModTime(ctx)
-	}	
+	}
 }
+
 // SetModTime sets the modification time of the file
 func (o *Object) SetModTime(ctx context.Context, mtime time.Time) error {
-	fs.Debugf("setModTime", "go")
 	if err := o.readMetadata(ctx); err != nil {
 		return err // refuse to act on unsupported format
 	}
@@ -2484,7 +2308,6 @@ func (o *Object) UnWrap() fs.Object {
 
 // Open opens the file for read.  Call Close() on the returned io.ReadCloser
 func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (rc io.ReadCloser, err error) {
-	fs.Debugf("Open","Go %s", o.remote)
 	if err := o.readMetadata(ctx); err != nil {
 		// refuse to open unsupported format
 		return nil, fmt.Errorf("can't open: %w", err)
@@ -2628,14 +2451,13 @@ type ObjectInfo struct {
 	src     fs.ObjectInfo
 	fs      *Fs
 	nChunks int    // number of data chunks
-	//CCHUNKER: obj
-	modT    int64
-	fileName string
 	xactID  string // transaction ID for "norename" or empty string for "renamed" chunks
 	size    int64  // overrides source size by the total size of data chunks
 	remote  string // overrides remote name
 	md5     string // overrides MD5 checksum
 	sha1    string // overrides SHA1 checksum
+	ofileName string // original fn when short_names
+	omodTime int64 // original modtime
 }
 
 func (f *Fs) wrapInfo(src fs.ObjectInfo, newRemote string, totalSize int64) *ObjectInfo {
@@ -2683,10 +2505,8 @@ func (oi *ObjectInfo) Size() int64 {
 
 // ModTime returns the modification time
 func (oi *ObjectInfo) ModTime(ctx context.Context) time.Time {
-	fs.Debugf("ModTime","go")
-	//CCHUNKER: write random modt 
-	//fmt.Printf("REMOTE() %#v\r\n", oi.fs)
-	if oi.fs.opt.UseMetaModt {
+	fs.Debugf("oi modtime","%s",oi.remote)
+	if oi.fs.opt.MetaModTime {
 		//fs.Debugf("ModTime","%s",oi.fs.opt.UseMetaModt)
 		//CCHUNKER: randome modt on remote file if modt enabled
 		start := int64(0)
@@ -2697,7 +2517,7 @@ func (oi *ObjectInfo) ModTime(ctx context.Context) time.Time {
 	} else {
 		return oi.src.ModTime(ctx)
 	}
-	
+	//return oi.src.ModTime(ctx)
 }
 
 // Hash returns the selected checksum of the wrapped file
@@ -2743,13 +2563,12 @@ type metaSimpleJSON struct {
 	Version  *int   `json:"ver"`
 	Size     *int64 `json:"size"`    // total size of data chunks
 	ChunkNum *int   `json:"nchunks"` // number of data chunks
-	//CCHUNKER: meta struct
-	ModTime  *int64 `json:"modt"`
-	FileName *string `json:"filename"`
 	// optional extra fields
 	MD5    string `json:"md5,omitempty"`
 	SHA1   string `json:"sha1,omitempty"`
 	XactID string `json:"txn,omitempty"` // transaction ID for norename transactions
+	OFileName string `json:"of"` // original filename if short_names is true
+	OModTime int64 `json:"om"` // original modTime if meta_modt is true
 }
 
 // marshalSimpleJSON
@@ -2759,7 +2578,7 @@ type metaSimpleJSON struct {
 // - if file contents can be mistaken as meta object
 // - if consistent hashing is On but wrapped remote can't provide given hash
 //
-func marshalSimpleJSON(ctx context.Context, size int64, nChunks int, modT int64, fileName string, md5, sha1, xactID string) ([]byte, error) {
+func marshalSimpleJSON(ctx context.Context, size int64, nChunks int, ofileName string, oModTime int64, md5, sha1, xactID string) ([]byte, error) {
 	version := metadataVersion
 	if xactID == "" && version == 2 {
 		version = 1
@@ -2769,13 +2588,12 @@ func marshalSimpleJSON(ctx context.Context, size int64, nChunks int, modT int64,
 		Version:  &version,
 		Size:     &size,
 		ChunkNum: &nChunks,
-		//CCHUNKER: marschal
-		ModTime:  &modT,
-		FileName:  &fileName,
 		// optional extra fields
 		MD5:    md5,
 		SHA1:   sha1,
 		XactID: xactID,
+		OFileName: ofileName,
+		OModTime: oModTime,
 	}
 	data, err := json.Marshal(&metadata)
 	if err == nil && data != nil && len(data) >= maxMetadataSizeWritten {
@@ -2851,12 +2669,11 @@ func unmarshalSimpleJSON(ctx context.Context, metaObject fs.Object, data []byte)
 	var nilFs *Fs // nil object triggers appropriate type method
 	info = nilFs.wrapInfo(metaObject, "", *metadata.Size)
 	info.nChunks = *metadata.ChunkNum
-	//CCHUNKER: info
-	info.modT = *metadata.ModTime
-	info.fileName = *metadata.FileName
 	info.md5 = metadata.MD5
 	info.sha1 = metadata.SHA1
 	info.xactID = metadata.XactID
+	info.ofileName = metadata.OFileName
+	info.omodTime =  int64(metadata.OModTime)
 	return info, true, nil
 }
 
@@ -2892,6 +2709,17 @@ func (f *Fs) Precision() time.Duration {
 // CanQuickRename returns true if the Fs supports a quick rename operation
 func (f *Fs) CanQuickRename() bool {
 	return f.base.Features().Move != nil
+}
+
+func stringToSha1(in string) string {
+	//return in
+	fs.Debugf("stringToSha1","in: %s",in)
+	c := in
+	h := sha1.New()
+	h.Write([]byte(c))
+	sum := hex.EncodeToString(h.Sum(nil))
+	fs.Debugf("stringToSha1","out: %s",sum)
+	return sum
 }
 
 // Check the interfaces are satisfied

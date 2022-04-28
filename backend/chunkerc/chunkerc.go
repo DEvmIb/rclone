@@ -1990,8 +1990,10 @@ func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object,
 func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
 	fs.Debugf("Move", "start")
 	fs.Debugf("m1","%s",remote)
-	dir, file := path.Split(remote)
-	remote = dir + "chunkerc_" + stringToSha1(file)
+	if f.opt.ShortNames {
+		dir, file := path.Split(remote)
+		remote = dir + "chunkerc_" + stringToSha1(file)
+	}
 	baseMove := func(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
 		return f.baseMove(ctx, src, remote, delNever)
 	}

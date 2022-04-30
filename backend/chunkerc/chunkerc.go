@@ -1366,9 +1366,13 @@ func (f *Fs) put(
 
 	// Check for input that looks like valid metadata
 	needMeta := len(c.chunks) > 1
-	if c.readCount <= maxMetadataSize && len(c.chunks) == 1 {
-		_, madeByChunker, _ := unmarshalSimpleJSON(ctx, c.chunks[0], c.smallHead)
-		needMeta = madeByChunker
+	if f.opt.MetaModTime || f.opt.ShortNames {
+		needMeta = true
+	} else {
+		if c.readCount <= maxMetadataSize && len(c.chunks) == 1 {
+			_, madeByChunker, _ := unmarshalSimpleJSON(ctx, c.chunks[0], c.smallHead)
+			needMeta = madeByChunker
+		}
 	}
 
 	// Finalize small object as non-chunked.

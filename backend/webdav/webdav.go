@@ -412,7 +412,7 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		endpoint:    u,
 		endpointURL: u.String(),
 		pacer:       fs.NewPacer(ctx, pacer.NewDefault(pacer.MinSleep(minSleep), pacer.MaxSleep(maxSleep), pacer.DecayConstant(decayConstant))),
-		precision:   fs.ModTimeNotSupported,
+		//precision:   fs.ModTimeNotSupported,
 	}
 
 	client := fshttp.NewClient(ctx)

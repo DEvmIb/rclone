@@ -1271,20 +1271,7 @@ func (f *Fs) put(
 	}
 
 	// Transfer chunks data
-	// useChunkSize := 6
-	if c.fs.opt.RandomSize && c.sizeTotal > 5 {
-		max := c.sizeTotal
-		if int64(f.opt.ChunkSize) < max {
-			max = int64(f.opt.ChunkSize)
-		}
-		min := max / 4
-		fs.Debugf("put","RandomSize total: %s max: %s min: %s",c.sizeTotal, max, min)
-		
-		use:=rand.Int63n(max - min + 1) + min
-		fs.Debugf("put","RandomSize result: %s",use)
-		//panic("ff")
-		c.chunkSize = use
-	}
+	
 	for c.chunkNo = 0; !c.done; c.chunkNo++ {
 		if c.chunkNo > maxSafeChunkNumber {
 			return nil, ErrChunkOverflow
@@ -1300,6 +1287,32 @@ func (f *Fs) put(
 			tempRemote = dir + "chunkerc_" + stringToSha1(file) + tempRemote[len(remote):]
 			fs.Debugf("put","tempRemote new %s", tempRemote)
 		}
+
+
+		// useChunkSize := 6
+		
+		if c.fs.opt.RandomSize && c.sizeTotal > 8 {
+			rand.Seed(time.Now().UnixNano())
+			max := c.sizeTotal / 2
+			if int64(f.opt.ChunkSize) < max {
+				max = int64(f.opt.ChunkSize)
+			}
+			minr := rand.Int63n( 8 - 3 ) + 5
+			min := int64(c.sizeTotal / minr)
+			fs.Debugf("put","RandomSize total: %s max: %s min: %s",c.sizeTotal, max, min)
+			rand.Seed(time.Now().UnixNano() )
+			use:=rand.Int63n(max - min + 1) + min
+			fs.Debugf("put","RandomSize result: %s",use)
+			//panic("ff")
+			if  use > (use / 2) {
+				rand.Seed(time.Now().UnixNano())
+				use = rand.Int63n(use - (use / 2)) + (use / 2)
+			}
+			c.chunkSize = use
+		}
+
+
+
 
 		size := c.sizeLeft
 		if size > c.chunkSize {

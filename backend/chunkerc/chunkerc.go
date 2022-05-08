@@ -1297,7 +1297,7 @@ func (f *Fs) put(
 			if int64(f.opt.ChunkSize) < max {
 				max = int64(f.opt.ChunkSize)
 			}
-			minr := rand.Int63n( 8 - 3 ) + 5
+			minr := rand.Int63n( 8 - 3 ) + 3
 			min := int64(c.sizeTotal / minr)
 			fs.Debugf("put","RandomSize total: %s max: %s min: %s",c.sizeTotal, max, min)
 			rand.Seed(time.Now().UnixNano() )

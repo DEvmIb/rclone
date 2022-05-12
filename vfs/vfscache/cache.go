@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"syscall"
 	"sync"
 	"time"
 
@@ -607,14 +608,25 @@ func (c *Cache) retryFailedResets() {
 	}
 }
 
+func (c *Cache) getRootFree() uint64 {
+	f := syscall.Statfs_t{}
+		err := syscall.Statfs(c.root, &f)
+		if err != nil {
+			return 0
+		}
+		return f.Bfree * uint64(f.Bsize)
+}
+
 func (c *Cache) purgeClean(quota int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	var items Items
-
+fs.Debugf("test","%s %s",int64(c.opt.CacheMaxSizeDisk),c.getRootFree())
 	if quota <= 0 || c.used < quota {
-		return
+		if c.getRootFree() > uint64(int64(c.opt.CacheMaxSizeDisk)) {
+			return
+		}
 	}
 
 	// Make a slice of clean cache files
@@ -627,8 +639,8 @@ func (c *Cache) purgeClean(quota int64) {
 	sort.Sort(items)
 
 	// Reset items until the quota is OK
-	for _, item := range items {
-		if c.used < quota {
+	for _, item := range items {		
+		if c.used < quota && c.getRootFree() > uint64(int64(c.opt.CacheMaxSizeDisk)) {
 			break
 		}
 		resetResult, spaceFreed, err := item.Reset()

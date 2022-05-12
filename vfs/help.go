@@ -87,6 +87,7 @@ find that you need one or the other or both.
     --vfs-cache-mode CacheMode           Cache mode off|minimal|writes|full (default off)
     --vfs-cache-max-age duration         Max age of objects in the cache (default 1h0m0s)
     --vfs-cache-max-size SizeSuffix      Max total size of objects in the cache (default off)
+    --vfs-cache-max-size-disk SizeSuffix Keep this Amount space on the Cache-Disk free (default off)
     --vfs-cache-poll-interval duration   Interval to poll the cache for stale objects (default 1m0s)
     --vfs-write-back duration            Time to writeback files after last use when using cache (default 5s)
 
@@ -106,6 +107,11 @@ uploaded, these will be uploaded next time rclone is run with the same
 flags.
 
 If using !--vfs-cache-max-size! note that the cache may exceed this size
+for two reasons.  Firstly because it is only checked every
+!--vfs-cache-poll-interval!.  Secondly because open files cannot be
+evicted from the cache.
+
+If using !--vfs-cache-max-size-disk! note that the cache may exceed this size
 for two reasons.  Firstly because it is only checked every
 !--vfs-cache-poll-interval!.  Secondly because open files cannot be
 evicted from the cache.

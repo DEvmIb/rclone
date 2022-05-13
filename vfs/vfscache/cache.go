@@ -11,7 +11,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
-	"syscall"
+	//"syscall"
 	"sync"
 	"time"
 
@@ -27,6 +27,7 @@ import (
 	"github.com/rclone/rclone/lib/file"
 	"github.com/rclone/rclone/vfs/vfscache/writeback"
 	"github.com/rclone/rclone/vfs/vfscommon"
+	"github.com/shirou/gopsutil/v3/disk"
 )
 
 // NB as Cache and Item are tightly linked it is necessary to have a
@@ -609,22 +610,30 @@ func (c *Cache) retryFailedResets() {
 }
 
 func (c *Cache) getRootFree() uint64 {
-	f := syscall.Statfs_t{}
-		err := syscall.Statfs(c.root, &f)
-		if err != nil {
-			return 0
-		}
-		return f.Bfree * uint64(f.Bsize)
+	//f := syscall.Statfs_t{}
+	//	err := syscall.Statfs(c.root, &f)
+	//	if err != nil {
+	//		return 0
+	//	}
+	f, err := disk.Usage(c.root)
+	if err != nil {
+		return 0
+	}
+	return f.Free
 }
 
 func (c *Cache) purgeClean(quota int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// FIXME: we all hate btrfs, poll intrval should be >= 60s 
+	free := c.getRootFree()
+	used := c.used
+	min := uint64(c.opt.CacheMinFree)
+	fs.Debugf("test","%s %s",used,free)
 
 	var items Items
-fs.Debugf("test","%s %s",int64(c.opt.CacheMinFree),c.getRootFree())
 	if quota <= 0 || c.used < quota {
-		if c.getRootFree() > uint64(int64(c.opt.CacheMinFree)) {
+		if free > min {
 			return
 		}
 	}
@@ -640,13 +649,17 @@ fs.Debugf("test","%s %s",int64(c.opt.CacheMinFree),c.getRootFree())
 
 	// Reset items until the quota is OK
 	for _, item := range items {		
-		if c.used < quota && c.getRootFree() > uint64(int64(c.opt.CacheMinFree)) {
+		if c.used < quota && free > min {
 			break
 		}
 		resetResult, spaceFreed, err := item.Reset()
 		// The item space might be freed even if we get an error after the cache file is removed
 		// The item will not be removed or reset if the cache data is dirty (DataDirty)
+		fs.Debugf("test","used: %s free: %s CacheMinFree: %s",used,free,min)
 		c.used -= spaceFreed
+		free = uint64(int64(free) + (used - c.used))
+		used = c.used
+		fs.Debugf("test","used: %s free: %s CacheMinFree: %s",used,free,min)
 		fs.Infof(nil, "vfs cache purgeClean item.Reset %s: %s, freed %d bytes", item.GetName(), resetResult.String(), spaceFreed)
 		if resetResult == RemovedNotInUse {
 			delete(c.item, item.name)

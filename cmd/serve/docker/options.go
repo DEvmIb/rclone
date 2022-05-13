@@ -234,8 +234,8 @@ func getVFSOption(vfsOpt *vfscommon.Options, opt rc.Params, key string) (ok bool
 		vfsOpt.CacheMaxAge, err = opt.GetDuration(key)
 	case "vfs-cache-max-size":
 		err = getFVarP(&vfsOpt.CacheMaxSize, opt, key)
-	case "vfs-cache-max-size-disk":
-		err = getFVarP(&vfsOpt.CacheMaxSizeDisk, opt, key)
+	case "vfs-cache-min-free":
+		err = getFVarP(&vfsOpt.CacheMinFree, opt, key)
 	case "vfs-read-chunk-size":
 		err = getFVarP(&vfsOpt.ChunkSize, opt, key)
 	case "vfs-read-chunk-size-limit":

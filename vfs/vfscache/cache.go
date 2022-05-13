@@ -622,9 +622,9 @@ func (c *Cache) purgeClean(quota int64) {
 	defer c.mu.Unlock()
 
 	var items Items
-fs.Debugf("test","%s %s",int64(c.opt.CacheMaxSizeDisk),c.getRootFree())
+fs.Debugf("test","%s %s",int64(c.opt.CacheMinFree),c.getRootFree())
 	if quota <= 0 || c.used < quota {
-		if c.getRootFree() > uint64(int64(c.opt.CacheMaxSizeDisk)) {
+		if c.getRootFree() > uint64(int64(c.opt.CacheMinFree)) {
 			return
 		}
 	}
@@ -640,7 +640,7 @@ fs.Debugf("test","%s %s",int64(c.opt.CacheMaxSizeDisk),c.getRootFree())
 
 	// Reset items until the quota is OK
 	for _, item := range items {		
-		if c.used < quota && c.getRootFree() > uint64(int64(c.opt.CacheMaxSizeDisk)) {
+		if c.used < quota && c.getRootFree() > uint64(int64(c.opt.CacheMinFree)) {
 			break
 		}
 		resetResult, spaceFreed, err := item.Reset()

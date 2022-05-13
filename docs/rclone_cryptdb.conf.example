@@ -1,0 +1,10 @@
+[test]
+type = cryptdb
+remote = /tmp/test/
+dbpath = /tmp/test-meta/
+dbfilenamemaxlength = 255
+use_mysql = true
+mysql_connect = rclone:rclone@tcp(10.21.200.152:3306)/rclone
+password = fNawI5rR-LHznW71Cf4W283XX64xd-3BG0aX
+password2 = VFB2ADK4i5ece8KVXxxc_dwA9O2DuvGYsKLb
+

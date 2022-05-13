@@ -3,16 +3,25 @@ package obscure
 import (
 	"bufio"
 	"fmt"
-
 	"os"
-
+	"os/exec"
+	"strings"
 	"github.com/rclone/rclone/cmd"
 	"github.com/rclone/rclone/fs/config/obscure"
+	"github.com/rclone/rclone/fs/config/flags"
 	"github.com/spf13/cobra"
+)
+
+var (
+	passCmd = false
+	passFile = false
 )
 
 func init() {
 	cmd.Root.AddCommand(commandDefinition)
+	cmdFlags := commandDefinition.Flags()
+	flags.BoolVarP(cmdFlags, &passCmd, "pass-cmd", "", passCmd, "get password from external command")
+	flags.BoolVarP(cmdFlags, &passFile, "pass-file", "", passFile, "read password from file")
 }
 
 var commandDefinition = &cobra.Command{
@@ -53,6 +62,20 @@ info.`,
 			if err := scanner.Err(); err != nil {
 				return err
 			}
+		} else if ( passCmd ) {
+			a := strings.Split(args[0], " ")
+			arg1, arg2 := a[0], a[1:len(a)]
+			out, err := exec.Command(arg1,arg2...).Output()
+			if err != nil {
+				return err
+			}
+			password = string(out)
+		} else if ( passFile ) {
+			file, err := os.ReadFile(args[0])
+			if err != nil {
+				return err
+			}
+				password = string(file)
 		} else {
 			password = args[0]
 		}

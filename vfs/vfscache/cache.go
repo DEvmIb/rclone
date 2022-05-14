@@ -58,6 +58,7 @@ type Cache struct {
 	item          map[string]*Item // files/directories in the cache
 	errItems      map[string]error // items in error state
 	used          int64            // total size of files in the cache
+	used_old      int64            // previews size. need for calc free space and clean only the rclone mount wo has written.
 	outOfSpace    bool             // out of space
 	cleanerKicked bool             // some thread kicked the cleaner upon out of space
 	kickerMu      sync.Mutex       // mutex for cleanerKicked
@@ -128,6 +129,7 @@ func New(ctx context.Context, fremote fs.Fs, opt *vfscommon.Options, avFn AddVir
 		hashOption: hashOption,
 		writeback:  writeback.New(ctx, opt),
 		avFn:       avFn,
+		used_old:   -1,
 	}
 
 	// load in the cache and metadata off disk
@@ -629,11 +631,16 @@ func (c *Cache) purgeClean(quota int64) {
 	free := c.getRootFree()
 	used := c.used
 	min := uint64(c.opt.CacheMinFree)
-	fs.Debugf("test","%s %s",used,free)
+
+	// no clean by free space when this rclone mount has not changed any files.
+	if used == c.used_old {
+		fs.Debugf("purgeClean","not purging by min free space, i don't have changed files")
+		free = min
+	}
 
 	var items Items
 	if quota <= 0 || c.used < quota {
-		if free > min {
+		if free >= min {
 			return
 		}
 	}
@@ -649,7 +656,7 @@ func (c *Cache) purgeClean(quota int64) {
 
 	// Reset items until the quota is OK
 	for _, item := range items {		
-		if c.used < quota && free > min {
+		if c.used < quota && free >= min {
 			break
 		}
 		resetResult, spaceFreed, err := item.Reset()
@@ -659,6 +666,7 @@ func (c *Cache) purgeClean(quota int64) {
 		c.used -= spaceFreed
 		free = uint64(int64(free) + (used - c.used))
 		used = c.used
+		c.used_old = used
 		fs.Debugf("test","used: %s free: %s CacheMinFree: %s",used,free,min)
 		fs.Infof(nil, "vfs cache purgeClean item.Reset %s: %s, freed %d bytes", item.GetName(), resetResult.String(), spaceFreed)
 		if resetResult == RemovedNotInUse {
@@ -783,6 +791,7 @@ func (c *Cache) clean(kicked bool) {
 
 		used := c.updateUsed()
 		if used <= int64(c.opt.CacheMaxSize) && len(c.errItems) == 0 {
+			c.used_old = used
 			break
 		}
 	}

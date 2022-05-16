@@ -594,6 +594,7 @@ func (f *Fs) makeChunkName(filePath string, chunkNo int, ctrlType, xactID string
 // active chunk - the returned xactID is ""
 // temporary chunk - the xactID is a non-empty string
 func (f *Fs) parseChunkName(filePath string) (parentPath string, chunkNo int, ctrlType, xactID string) {
+	return
 	fs.Debugf("parseChunkName","%s",filePath)
 	dir, name := path.Split(filePath)
 	match := f.nameRegexp.FindStringSubmatch(name)
@@ -1233,215 +1234,52 @@ func (f *Fs) put(
 	ctx context.Context, in io.Reader, src fs.ObjectInfo, remote string, options []fs.OpenOption,
 	basePut putFn, action string, target fs.Object) (obj fs.Object, err error) {
 
+		var metaObject fs.Object
 
-		
 		c := f.newChunkingReader(src)
+		
+		defer func() {
+			if err != nil {
+				c.rollback(ctx, metaObject)
+			}
+		}()
+		
+		
 		wrapIn := c.wrapStream(ctx, in, src)
 
+		c.chunkSize = 1
 
-	return
-	// Perform consistency checks
-	if err := f.forbidChunk(src, remote); err != nil {
-		return nil, fmt.Errorf("%s refused: %w", action, err)
-	}
-	if target == nil {
-		// Get target object with a quick directory scan
-		// skip metadata check if target object does not exist.
-		// ignore not-chunked objects, skip chunk size checks.
-		if obj, err := f.scanObject(ctx, remote, true); err == nil {
-			target = obj
-		}
-	}
-	if target != nil {
-		obj := target.(*Object)
-		if err := obj.readMetadata(ctx); err == ErrMetaUnknown {
-			// refuse to update a file of unsupported format
-			return nil, fmt.Errorf("refusing to %s: %w", action, err)
-		}
-	}
+		for c.chunkNo = 0; !c.done; c.chunkNo++ {
+			c.chunkLimit = 100
+			size := c.sizeLeft
+			if size > c.chunkSize {
+				size = c.chunkSize
+			}
+			
+			info := f.wrapInfo(src, "muh." + fmt.Sprint(c.chunkNo), size)
+			//FIXME: check for errors
+			basePut(ctx, wrapIn, info, options...)
 
-	// Prepare to upload
-	//c := f.newChunkingReader(src)
-	//wrapIn := c.wrapStream(ctx, in, src)
+			if c.sizeLeft == 0 && !c.done {
+				// The file has been apparently put by hash, force completion.
+				c.done = true
+			}
 
-	var metaObject fs.Object
-	defer func() {
-		if err != nil {
-			c.rollback(ctx, metaObject)
-		}
-	}()
+			
 
-	baseRemote := remote
-	xactID, errXact := f.newXactID(ctx, baseRemote)
-	if errXact != nil {
-		return nil, errXact
-	}
-
-	min := c.sizeTotal / 2
-	csize := rand.Int63n(c.sizeTotal - min) + min
-
-	// Transfer chunks data
-	for c.chunkNo = 0; !c.done; c.chunkNo++ {
-		if c.chunkNo > maxSafeChunkNumber {
-			return nil, ErrChunkOverflow
 		}
 
-		tempRemote := f.makeChunkName(baseRemote, c.chunkNo, "", xactID)
-		//_, fi := path.Split(otempRemote)
-		//tempRemote := ".cache/"+fi
-		//fs.Debugf("tempRemote","o: %s n: %s",otempRemote,tempRemote)
-
-		size := c.sizeLeft
-		if size > csize {
-			size = csize
-		}
-		savedReadCount := c.readCount
-
-		// If a single chunk is expected, avoid the extra rename operation
-		chunkRemote := tempRemote
-		if c.expectSingle && c.chunkNo == 0 && optimizeFirstChunk {
-			chunkRemote = baseRemote
-		}
-		info := f.wrapInfo(src, chunkRemote, size)
-		//info.remote=".test/1.test"
-		fs.Debugf("info","%s %s",info.remote,info.String())
-		// Refill chunkLimit and let basePut repeatedly call chunkingReader.Read()
-		c.chunkLimit = csize
-		// TODO: handle range/limit options
-		chunk, errChunk := basePut(ctx, wrapIn, info, options...)
+		/* info := f.wrapInfo(src, "123", c.sizeTotal)
+		_, errChunk := basePut(ctx, wrapIn, info, options...)
 		if errChunk != nil {
 			return nil, errChunk
-		}
+		} */
 
-		if size > 0 && c.readCount == savedReadCount && c.expectSingle {
-			// basePut returned success but didn't call chunkingReader's Read.
-			// This is possible if wrapped remote has performed the put by hash
-			// because chunker bridges Hash from source for non-chunked files.
-			// Hence, force Read here to update accounting and hashsums.
-			if err := c.dummyRead(wrapIn, size); err != nil {
-				return nil, err
-			}
-		}
-		if c.sizeLeft == 0 && !c.done {
-			// The file has been apparently put by hash, force completion.
-			c.done = true
-		}
-
-		// Expected a single chunk but more to come, so name it as usual.
-		if !c.done && chunkRemote != tempRemote {
-			fs.Infof(chunk, "Expected single chunk, got more")
-			chunkMoved, errMove := f.baseMove(ctx, chunk, tempRemote, delFailed)
-			if errMove != nil {
-				silentlyRemove(ctx, chunk)
-				return nil, errMove
-			}
-			chunk = chunkMoved
-		}
-
-		// Wrapped remote may or may not have seen EOF from chunking reader,
-		// e.g. the box multi-uploader reads exactly the chunk size specified
-		// and skips the "EOF" read. Hence, switch to next limit here.
-		if !(c.chunkLimit == 0 || c.chunkLimit == csize || c.sizeTotal == -1 || c.done) {
-			silentlyRemove(ctx, chunk)
-			return nil, fmt.Errorf("destination ignored %d data bytes", c.chunkLimit)
-		}
-		c.chunkLimit = csize
-
-		c.chunks = append(c.chunks, chunk)
-	}
-
-	// Validate uploaded size
-	if c.sizeTotal != -1 && c.readCount != c.sizeTotal {
-		return nil, fmt.Errorf("incorrect upload size %d != %d", c.readCount, c.sizeTotal)
-	}
-
-	// Check for input that looks like valid metadata
-	needMeta := len(c.chunks) > 1
-	if c.readCount <= maxMetadataSize && len(c.chunks) == 1 {
-		_, madeByChunker, _ := unmarshalSimpleJSON(ctx, c.chunks[0], c.smallHead)
-		needMeta = madeByChunker
-	}
-
-	// Finalize small object as non-chunked.
-	// This can be bypassed, and single chunk with metadata will be
-	// created if forced by consistent hashing or due to unsafe input.
-	if !needMeta && !f.hashAll && f.useMeta {
-		// If previous object was chunked, remove its chunks
-		f.removeOldChunks(ctx, baseRemote)
-
-		// Rename single data chunk in place
-		chunk := c.chunks[0]
-		if chunk.Remote() != baseRemote {
-			chunkMoved, errMove := f.baseMove(ctx, chunk, baseRemote, delAlways)
-			if errMove != nil {
-				silentlyRemove(ctx, chunk)
-				return nil, errMove
-			}
-			chunk = chunkMoved
-		}
-
-		return f.newObject("", chunk, nil), nil
-	}
-
-	// Validate total size of data chunks
-	var sizeTotal int64
-	for _, chunk := range c.chunks {
-		sizeTotal += chunk.Size()
-	}
-	if sizeTotal != c.readCount {
-		return nil, fmt.Errorf("incorrect chunks size %d != %d", sizeTotal, c.readCount)
-	}
-
-	// If previous object was chunked, remove its chunks
-	f.removeOldChunks(ctx, baseRemote)
-
-	if !f.useNoRename {
-		// The transaction suffix will be removed for backends with quick rename operations
-		for chunkNo, chunk := range c.chunks {
-			chunkRemote := f.makeChunkName(baseRemote, chunkNo, "", "")
-			//fs.Debugf("move","%s %s",chunk.Remote(),chunkRemote)
-			//_, fi := path.Split(chunkRemote)
-			//chunkRemote=".cache/"+fi
-			chunkMoved, errMove := f.baseMove(ctx, chunk, chunkRemote, delFailed)
-			if errMove != nil {
-				return nil, errMove
-			}
-			c.chunks[chunkNo] = chunkMoved
-		}
-		xactID = ""
-	}
-
-	if !f.useMeta {
-		// Remove stale metadata, if any
-		oldMeta, errOldMeta := f.base.NewObject(ctx, baseRemote)
-		if errOldMeta == nil {
-			silentlyRemove(ctx, oldMeta)
-		}
-
-		o := f.newObject(baseRemote, nil, c.chunks)
-		o.size = sizeTotal
+		o := f.newObject("", metaObject, c.chunks)
+		o.size = c.sizeTotal
 		return o, nil
-	}
-
-	// Update meta object
-	var metadata []byte
-	switch f.opt.MetaFormat {
-	case "simplejson":
-		c.updateHashes()
-		metadata, err = marshalSimpleJSON(ctx, sizeTotal, len(c.chunks), c.md5, c.sha1, xactID)
-	}
-	if err == nil {
-		metaInfo := f.wrapInfo(src, baseRemote, int64(len(metadata)))
-		metaObject, err = basePut(ctx, bytes.NewReader(metadata), metaInfo)
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	o := f.newObject("", metaObject, c.chunks)
-	o.size = sizeTotal
-	o.xactID = xactID
-	return o, nil
+	
+	
 }
 
 type putFn func(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error)
@@ -1778,7 +1616,7 @@ func (f *Fs) Mkdir(ctx context.Context, dir string) error {
 
 	
 	root := path.Join(f.root, dir)
-	_, dname := path.Split(root) 
+	//_, dname := path.Split(root) 
 
 	fs.Debugf("MKdir","go dir: %s f.root: %s root: %s", dir, f.root, root)
 
@@ -1789,30 +1627,6 @@ func (f *Fs) Mkdir(ctx context.Context, dir string) error {
 
 	f.mysqlMkDirRe(root)
 
-	return nil
-	
-
-
-	if dir != "" {
-		// find parent
-		panic("find parent")
-	}
-
-	db, err := sql.Open("mysql", "rclone:rclone@tcp(10.21.200.152:3306)/rclone")
-	if err != nil {
-        panic(err.Error())
-    }
-	defer db.Close()
-
-	res, err := db.Query("insert into meta (path, type, name, modtime) values(?, ?, ?, ?)",root, 1, dname, time.Now().UnixMilli())
-	if err != nil {
-        panic(err.Error())
-    }
-	defer res.Close()
-	//if err := f.forbidChunk(dir, dir); err != nil {
-	//	return fmt.Errorf("can't mkdir: %w", err)
-	//}
-	//return f.base.Mkdir(ctx, dir)
 	return nil
 }
 

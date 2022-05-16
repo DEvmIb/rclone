@@ -1238,11 +1238,11 @@ func (f *Fs) put(
 
 		c := f.newChunkingReader(src)
 		
-		defer func() {
+		/* defer func() {
 			if err != nil {
 				c.rollback(ctx, metaObject)
 			}
-		}()
+		}() */
 		
 		
 		wrapIn := c.wrapStream(ctx, in, src)
@@ -1250,7 +1250,7 @@ func (f *Fs) put(
 		c.chunkSize = 1
 
 		for c.chunkNo = 0; !c.done; c.chunkNo++ {
-			c.chunkLimit = 100
+			c.chunkLimit = 200
 			size := c.sizeLeft
 			if size > c.chunkSize {
 				size = c.chunkSize
@@ -1268,14 +1268,20 @@ func (f *Fs) put(
 			
 
 		}
-
+		fs.Debugf("done","d")
 		/* info := f.wrapInfo(src, "123", c.sizeTotal)
 		_, errChunk := basePut(ctx, wrapIn, info, options...)
 		if errChunk != nil {
 			return nil, errChunk
 		} */
-
-		o := f.newObject("", metaObject, c.chunks)
+		o := &Object{
+			remote: remote,
+			main:   metaObject,
+			size:   c.sizeTotal,
+			f:      f,
+			//chunks: chunks,
+		}
+		//o := f.newObject("", metaObject, c.chunks)
 		o.size = c.sizeTotal
 		return o, nil
 	
@@ -1721,6 +1727,7 @@ func (o *Object) Remove(ctx context.Context) (err error) {
 
 // copyOrMove implements copy or move
 func (f *Fs) copyOrMove(ctx context.Context, o *Object, remote string, do copyMoveFn, md5, sha1, opName string) (fs.Object, error) {
+	fs.Debugf("copyOrMove","run")
 	if err := f.forbidChunk(o, remote); err != nil {
 		return nil, fmt.Errorf("can't %s: %w", opName, err)
 	}
@@ -2065,6 +2072,7 @@ func (o *Object) addChunk(chunk fs.Object, chunkNo int) error {
 
 // validate verifies the object internals and updates total size
 func (o *Object) validate() error {
+	fs.Debugf("validate","run")
 	if !o.isComposite() {
 		_ = o.mainChunk() // verify that single wrapped chunk exists
 		return nil
@@ -2145,24 +2153,29 @@ func (o *Object) Remote() string {
 
 // Size returns the size of the file
 func (o *Object) Size() int64 {
-	if o.isComposite() {
+	fs.Debugf("size","run")
+	/* if o.isComposite() {
 		return o.size // total size of data chunks in a composite file
 	}
-	return o.mainChunk().Size() // size of wrapped non-chunked file
+	return o.mainChunk().Size() // size of wrapped non-chunked file */
+	return o.size
 }
 
 // Storable returns whether object is storable
 func (o *Object) Storable() bool {
+	fs.Debugf("storable","run")
 	return o.mainChunk().Storable()
 }
 
 // ModTime returns the modification time of the file
 func (o *Object) ModTime(ctx context.Context) time.Time {
+	fs.Debugf("modtime","run")
 	return o.mainChunk().ModTime(ctx)
 }
 
 // SetModTime sets the modification time of the file
 func (o *Object) SetModTime(ctx context.Context, mtime time.Time) error {
+	fs.Debugf("setmodtime","run")
 	if err := o.readMetadata(ctx); err != nil {
 		return err // refuse to act on unsupported format
 	}
@@ -2188,6 +2201,9 @@ func (o *Object) SetModTime(ctx context.Context, mtime time.Time) error {
 // on the level of wrapped remote but chunker is unaware of that.
 //
 func (o *Object) Hash(ctx context.Context, hashType hash.Type) (string, error) {
+	//FIXME: hash
+	return "", nil
+	/* fs.Debugf("hash","run")
 	if err := o.readMetadata(ctx); err != nil {
 		return "", err // valid metadata is required to get hash, abort
 	}
@@ -2212,16 +2228,18 @@ func (o *Object) Hash(ctx context.Context, hashType hash.Type) (string, error) {
 		return o.sha1, nil
 	default:
 		return "", hash.ErrUnsupported
-	}
+	} */
 }
 
 // UnWrap returns the wrapped Object
 func (o *Object) UnWrap() fs.Object {
+	fs.Debugf("unwrap","run")
 	return o.mainChunk()
 }
 
 // Open opens the file for read.  Call Close() on the returned io.ReadCloser
 func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (rc io.ReadCloser, err error) {
+	fs.Debugf("open","run")
 	if err := o.readMetadata(ctx); err != nil {
 		// refuse to open unsupported format
 		return nil, fmt.Errorf("can't open: %w", err)
@@ -2451,6 +2469,7 @@ func (oi *ObjectInfo) Hash(ctx context.Context, hashType hash.Type) (string, err
 
 // ID returns the ID of the Object if known, or "" if not
 func (o *Object) ID() string {
+	fs.Debugf("ID","run")
 	if doer, ok := o.mainChunk().(fs.IDer); ok {
 		return doer.ID()
 	}

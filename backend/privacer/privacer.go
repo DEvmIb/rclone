@@ -546,7 +546,7 @@ func (f *Fs) setChunkNameFormat(pattern string) error {
 
 // build an sha1 string from input string
 func (f *Fs) makeSha1FromString(input string) string {
-	return input
+	//return input
 	h := sha1.New()
 	h.Write([]byte(input))
 	bs := h.Sum(nil)
@@ -934,7 +934,8 @@ func (f *Fs) put(
 		di, fi := path.Split(path.Join(f.oroot,remote))
 		//di = f.cleanFolderSlashes(di)
 		fs.Debugf("put new","di: %s fi: %s",di,fi)
-		f.mysqlQuery("replace into meta (id,parent,type,name,modtime,md5,sha1,size,chunks) values (?,?,?,?,?,?,?,?,?)",f.makeSha1FromString(f.prefixSlash(di+fi)),f.makeSha1FromString(f.prefixSlash(f.cleanFolderSlashes(di))),2,fi,src.ModTime(ctx).UnixNano(),o.md5,o.sha1,c.sizeTotal,c.chunkNo)
+		_r, _ :=f.mysqlQuery("replace into meta (id,parent,type,name,modtime,md5,sha1,size,chunks) values (?,?,?,?,?,?,?,?,?)",f.makeSha1FromString(f.prefixSlash(di+fi)),f.makeSha1FromString(f.prefixSlash(f.cleanFolderSlashes(di))),2,fi,src.ModTime(ctx).UnixNano(),o.md5,o.sha1,c.sizeTotal,c.chunkNo)
+		defer _r.Close()
 		o.size = c.sizeTotal
 		return o, nil
 	
@@ -1266,7 +1267,8 @@ func (f *Fs) mysqlMkDirRe(_path string) {
 	for _, name := range root {
 		fs.Debugf("mysqlMkDirRe","s: %s p: %s n: %s p: %s",name,_p,f.makeSha1FromString(_p+"/"+name),f.makeSha1FromString(_p))
 		fs.Debugf("test","%s",time.Now().UnixMilli())
-		f.mysqlQuery("insert ignore into meta (id, parent, type, name, modtime) values(?, ?, ?, ? ,?)",f.makeSha1FromString(_p+"/"+name), f.makeSha1FromString(_p), 1, name, time.Now().UnixNano())
+		_r, _ := f.mysqlQuery("insert ignore into meta (id, parent, type, name, modtime) values(?, ?, ?, ? ,?)",f.makeSha1FromString(_p+"/"+name), f.makeSha1FromString(_p), 1, name, time.Now().UnixNano())
+		defer _r.Close()
 		_p+= "/"+name
 	}
 }

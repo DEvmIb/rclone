@@ -276,6 +276,10 @@ This method is EXPERIMENTAL, don't use on production systems.`,
 
 // NewFs constructs an Fs from the path, container:path
 func NewFs(ctx context.Context, name, rpath string, m configmap.Mapper) (fs.Fs, error) {
+	fs.Debugf("newfs","%s",rpath)
+	// chunks always chunk folder
+	orpath := rpath
+	rpath = "chunks"
 	// Parse config into Options struct
 	opt := new(Options)
 	err := configstruct.Set(m, opt)
@@ -309,6 +313,7 @@ func NewFs(ctx context.Context, name, rpath string, m configmap.Mapper) (fs.Fs, 
 		base: baseFs,
 		name: name,
 		root: rpath,
+		oroot: orpath,
 		opt:  *opt,
 	}
 	cache.PinUntilFinalized(f.base, f)
@@ -366,6 +371,7 @@ type Options struct {
 type Fs struct {
 	name         string
 	root         string
+	oroot		 string
 	base         fs.Fs          // remote wrapped by chunker overlay
 	wrapper      fs.Fs          // wrapper is used by SetWrapper
 	useMeta      bool           // false if metadata format is 'none'
@@ -536,6 +542,7 @@ func (f *Fs) setChunkNameFormat(pattern string) error {
 
 // build an sha1 string from input string
 func (f *Fs) makeSha1FromString(input string) string {
+	return input
 	h := sha1.New()
 	h.Write([]byte(input))
 	bs := h.Sum(nil)
@@ -729,7 +736,18 @@ func (f *Fs) newXactID(ctx context.Context, filePath string) (xactID string, err
 
 func (f *Fs) addSlash(path string) string {
 	if path != "" {
-		path += "/"
+		if !strings.HasSuffix(path,"/") {
+			path += "/"
+		}
+	}
+	return path
+}
+
+func (f *Fs) prefixSlash(path string) string {
+	if path != "" {
+		if !strings.HasPrefix(path,"/") {
+			path = "/" + path
+		}
 	}
 	return path
 }
@@ -752,6 +770,9 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 		Type int `json:"type"`
 		Name string `json:"name"`
 		ModTime int64 `json:"modtime"`
+		md5 string `json:"md5"`
+		sha1 string `json:"sha1"`
+		size int64 `json:"size"`
 	}
 
 	if dir != "" {
@@ -763,11 +784,14 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 		//}
 	}
 
-	root := path.Join(f.root, dir)
+	root := path.Join(f.oroot, dir)
 	//root := f.root
 	nroot := root
 	if root != "" && !strings.HasPrefix(root,"/") {
 		nroot="/"+root
+	}
+	if nroot == "/" {
+		nroot = ""
 	}
 	/* if !strings.HasPrefix(root, "/") && root != "" {
 		root = "/" + root
@@ -776,7 +800,7 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 		root = ""
 	} */
 	//_, dname := path.Split(root)
-	fs.Debugf("List","dir: %s root: %s nroot: %s sum: %s",dir,f.root,nroot,f.makeSha1FromString(nroot))
+	fs.Debugf("List","dir: %s root: %s nroot: %s sum: %s",dir,f.oroot,nroot,f.makeSha1FromString(nroot))
 	
 	if !f.mysqlDirExists(nroot) {
 		return nil, errors.New("dir not found")
@@ -790,7 +814,7 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 	}
 	for index.Next() {
 		var entry mysqlEntry
-		err = index.Scan(&entry.ID, &entry.Parent, &entry.Type, &entry.Name, &entry.ModTime)
+		err = index.Scan(&entry.ID, &entry.Parent, &entry.Type, &entry.Name, &entry.ModTime, &entry.md5, &entry.sha1, &entry.size)
 		if err != nil {
 			panic(err.Error())
 		}
@@ -803,6 +827,49 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 		if entry.Type == 1 {
 			nentry := fs.NewDir( f.addSlash(dir) + entry.Name, time.Unix(0,entry.ModTime))
 			entries = append(entries, nentry)
+		}
+		// file
+		if entry.Type == 2 {
+			
+			o := &Object{
+				f:     f,
+				remote: f.addSlash(dir)+entry.Name,
+				modTime: time.Unix(0,entry.ModTime),
+				size: entry.size,
+			}
+			c:= &Object{
+				f:     f,
+				remote: "muh.0",
+				modTime: time.Unix(0,entry.ModTime),
+				size: 200,
+
+			}
+			c1:= &Object{
+				f:     f,
+				remote: "muh.1",
+				modTime: time.Unix(0,entry.ModTime),
+				size: 200,
+
+			}
+			c2:= &Object{
+				f:     f,
+				remote: "muh.2",
+				modTime: time.Unix(0,entry.ModTime),
+				size: 200,
+
+			}
+			c3:= &Object{
+				f:     f,
+				remote: "muh.3",
+				modTime: time.Unix(0,entry.ModTime),
+				size: 130,
+				
+
+			}
+			o.isFull=true
+			o.chunks = append(o.chunks, c,c1,c2,c3)
+			//nentry := fs.Object( f.addSlash(dir) + entry.Name, time.Unix(0,entry.ModTime))
+			entries = append(entries, o)
 		}
 	} 
     
@@ -1116,6 +1183,7 @@ func (f *Fs) scanObject(ctx context.Context, remote string, quickScan bool) (fs.
 // readMetadata will attempt to parse object as composite with fallback
 // to non-chunked representation if the attempt fails.
 func (o *Object) readMetadata(ctx context.Context) error {
+	fs.Debugf("readMetadata","run")
 	// return quickly if metadata is absent or has been already cached
 	if !o.f.useMeta {
 		o.isFull = true
@@ -1233,10 +1301,22 @@ func (o *Object) readXactID(ctx context.Context) (xactID string, err error) {
 func (f *Fs) put(
 	ctx context.Context, in io.Reader, src fs.ObjectInfo, remote string, options []fs.OpenOption,
 	basePut putFn, action string, target fs.Object) (obj fs.Object, err error) {
+		fs.Debugf("put","srcro: %s srcre: %s remote: %s oroot: %s",src.Fs().Root(),src.Remote(),remote,f.oroot)
+		fs.Debugf("root","%s",f.oroot)
+		
+		
 
 		var metaObject fs.Object
 
+		f.mysqlMkDirRe(f.oroot)
+
+		
+		
+		// whe use our own structure
+		//f.root=""
+		
 		c := f.newChunkingReader(src)
+		
 		
 		/* defer func() {
 			if err != nil {
@@ -1245,11 +1325,22 @@ func (f *Fs) put(
 		}() */
 		
 		
-		wrapIn := c.wrapStream(ctx, in, src)
+		// how to delete
+		/* oldFsObject, err := f.NewObject(ctx, "muh.6")
+		if err == nil {
+			oldObject := oldFsObject.(*Object)
+			err = oldObject.Remove(ctx)
+		} */
 
-		c.chunkSize = 1
+		wrapIn := c.wrapStream(ctx, in, src)
+		
+		//body return check must be
+		c.chunkSize = 200
+		
+
 
 		for c.chunkNo = 0; !c.done; c.chunkNo++ {
+			//chunk size
 			c.chunkLimit = 200
 			size := c.sizeLeft
 			if size > c.chunkSize {
@@ -1257,9 +1348,12 @@ func (f *Fs) put(
 			}
 			
 			info := f.wrapInfo(src, "muh." + fmt.Sprint(c.chunkNo), size)
+			
 			//FIXME: check for errors
-			basePut(ctx, wrapIn, info, options...)
-
+			_, err := basePut(ctx, wrapIn, info, options...)
+			if err != nil {
+				//return nil, err
+			}
 			if c.sizeLeft == 0 && !c.done {
 				// The file has been apparently put by hash, force completion.
 				c.done = true
@@ -1282,6 +1376,16 @@ func (f *Fs) put(
 			//chunks: chunks,
 		}
 		//o := f.newObject("", metaObject, c.chunks)
+		
+
+		// mount put: srcro:  srcre: 1/2/3/6.txt remote: 1/2/3/6.txt oroot:
+		//			put new: di: 2/3/ fi: 123.txt
+		// copy put: srcro: /tmp srcre: 123.txt remote: 123.txt oroot: 2/3
+		// 			put new: di: 2/3/ fi: 123.txt
+		di, fi := path.Split(path.Join(f.oroot,remote))
+		//di = f.cleanFolderSlashes(di)
+		fs.Debugf("put new","di: %s fi: %s",di,fi)
+		f.mysqlQuery("replace into meta (id,parent,type,name,modtime,md5,sha1,size) values (?,?,?,?,?,?,?,?)",f.makeSha1FromString(f.prefixSlash(di+fi)),f.makeSha1FromString(f.prefixSlash(f.cleanFolderSlashes(di))),2,fi,src.ModTime(ctx).UnixNano(),c.md5,c.sha1,c.sizeTotal)
 		o.size = c.sizeTotal
 		return o, nil
 	
@@ -1469,11 +1573,13 @@ func (f *Fs) removeOldChunks(ctx context.Context, remote string) {
 // will return the object and the error, otherwise will return
 // nil and the error
 func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error) {
+	fs.Debugf("Put","start")
 	return f.put(ctx, in, src, src.Remote(), options, f.base.Put, "put", nil)
 }
 
 // PutStream uploads to the remote path with the modTime given of indeterminate size
 func (f *Fs) PutStream(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error) {
+	fs.Debugf("Purge","start")
 	return f.put(ctx, in, src, src.Remote(), options, f.base.Features().PutStream, "upload", nil)
 }
 
@@ -1621,10 +1727,10 @@ func (f *Fs) Mkdir(ctx context.Context, dir string) error {
 	
 
 	
-	root := path.Join(f.root, dir)
+	root := path.Join(f.oroot, dir)
 	//_, dname := path.Split(root) 
 
-	fs.Debugf("MKdir","go dir: %s f.root: %s root: %s", dir, f.root, root)
+	fs.Debugf("MKdir","go dir: %s f.oroot: %s root: %s", dir, f.oroot, root)
 
 	if root == ""  {
 		// no folder, silence discard
@@ -1655,6 +1761,7 @@ func (f *Fs) Rmdir(ctx context.Context, dir string) error {
 // active chunks but also all hidden temporary chunks in the directory.
 //
 func (f *Fs) Purge(ctx context.Context, dir string) error {
+	fs.Debugf("Purge","start")
 	do := f.base.Features().Purge
 	if do == nil {
 		return fs.ErrorCantPurge
@@ -1880,6 +1987,7 @@ func (f *Fs) okForServerSide(ctx context.Context, src fs.Object, opName string) 
 //
 // If it isn't possible then return fs.ErrorCantCopy
 func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
+	fs.Debugf("Copy","start")
 	baseCopy := f.base.Features().Copy
 	if baseCopy == nil {
 		return nil, fs.ErrorCantCopy
@@ -1901,6 +2009,7 @@ func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object,
 //
 // If it isn't possible then return fs.ErrorCantMove
 func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
+	fs.Debugf("Move","start")
 	baseMove := func(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
 		return f.baseMove(ctx, src, remote, delNever)
 	}
@@ -2044,6 +2153,7 @@ type Object struct {
 	xactID    string      // transaction ID for "norename" or empty string for "renamed" chunks
 	md5       string
 	sha1      string
+	modTime   time.Time
 	f         *Fs
 }
 
@@ -2170,7 +2280,8 @@ func (o *Object) Storable() bool {
 // ModTime returns the modification time of the file
 func (o *Object) ModTime(ctx context.Context) time.Time {
 	fs.Debugf("modtime","run")
-	return o.mainChunk().ModTime(ctx)
+	//return o.mainChunk().ModTime(ctx)
+	return o.modTime
 }
 
 // SetModTime sets the modification time of the file
@@ -2239,7 +2350,41 @@ func (o *Object) UnWrap() fs.Object {
 
 // Open opens the file for read.  Call Close() on the returned io.ReadCloser
 func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (rc io.ReadCloser, err error) {
-	fs.Debugf("open","run")
+	fs.Debugf("open","run remote: %s %s",o.Remote(),o.chunks)
+
+	/* if err := o.readMetadata(ctx); err != nil {
+		// refuse to open unsupported format
+		return nil, fmt.Errorf("can't open: %w", err)
+	} */
+	/* if !o.isComposite() {
+		return o.mainChunk().Open(ctx, options...) // chain to wrapped non-chunked file
+	} */
+	var openOptions []fs.OpenOption
+	var offset, limit int64 = 0, -1
+
+	for _, option := range options {
+		switch opt := option.(type) {
+		case *fs.SeekOption:
+			offset = opt.Offset
+		case *fs.RangeOption:
+			offset, limit = opt.Decode(o.size)
+		default:
+			// pass Options on to the wrapped open, if appropriate
+			openOptions = append(openOptions, option)
+		}
+	}
+
+	/* if offset < 0 {
+		return nil, errors.New("invalid offset")
+	}
+	if limit < 0 {
+		limit = o.size - offset
+	} */
+
+	return o.newLinearReader(ctx, offset, limit, openOptions)
+
+	/* 
+	
 	if err := o.readMetadata(ctx); err != nil {
 		// refuse to open unsupported format
 		return nil, fmt.Errorf("can't open: %w", err)
@@ -2270,7 +2415,7 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (rc io.Read
 		limit = o.size - offset
 	}
 
-	return o.newLinearReader(ctx, offset, limit, openOptions)
+	return o.newLinearReader(ctx, offset, limit, openOptions) */
 }
 
 // linearReader opens and reads file chunks sequentially, without read-ahead
@@ -2286,6 +2431,7 @@ type linearReader struct {
 }
 
 func (o *Object) newLinearReader(ctx context.Context, offset, limit int64, options []fs.OpenOption) (io.ReadCloser, error) {
+	fs.Debugf("newLinearReader","run")
 	r := &linearReader{
 		ctx:     ctx,
 		chunks:  o.chunks,
@@ -2306,6 +2452,7 @@ func (o *Object) newLinearReader(ctx context.Context, offset, limit int64, optio
 }
 
 func (r *linearReader) nextChunk(offset int64) (int64, error) {
+	fs.Debugf("(r *linearReader) nextChunk","run")
 	if r.err != nil {
 		return -1, r.err
 	}
@@ -2341,6 +2488,7 @@ func (r *linearReader) nextChunk(offset int64) (int64, error) {
 }
 
 func (r *linearReader) Read(p []byte) (n int, err error) {
+	fs.Debugf("(r *linearReader) Read","run")
 	if r.err != nil {
 		return 0, r.err
 	}
@@ -2371,6 +2519,7 @@ func (r *linearReader) Read(p []byte) (n int, err error) {
 }
 
 func (r *linearReader) Close() (err error) {
+	fs.Debugf("(r *linearReader) Close()","run")
 	if r.reader != nil {
 		err = r.reader.Close()
 		r.reader = nil
@@ -2435,7 +2584,10 @@ func (oi *ObjectInfo) Size() int64 {
 
 // ModTime returns the modification time
 func (oi *ObjectInfo) ModTime(ctx context.Context) time.Time {
-	return oi.src.ModTime(ctx)
+	//return oi.src.ModTime(ctx)
+	now := time.Now().Unix()
+	mod := rand.Int63n(now - 1000) + 1000
+	return time.Unix(mod,0)
 }
 
 // Hash returns the selected checksum of the wrapped file

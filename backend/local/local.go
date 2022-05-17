@@ -518,6 +518,7 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 				if f.opt.TranslateSymlinks && fi.Mode()&os.ModeSymlink != 0 {
 					newRemote += linkSuffix
 				}
+				fs.Debugf("list local","%s",newRemote)
 				fso, err := f.newObjectWithInfo(newRemote, fi)
 				if err != nil {
 					return nil, err

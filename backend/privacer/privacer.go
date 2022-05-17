@@ -1,8 +1,13 @@
 // Package privacer provides wrappers for Fs and Object which split large files in chunks
+//TODO: delayed deletion. on file or dir remove only metadata delete. remove files later by command
+//TODO: folders and files additional random id needed for delayed delete.
+//TODO: SetModTime
+//TODO: move
+//TODO: remove
+
 package privacer
 
 import (
-	"bytes"
 	"context"
 	"crypto/md5"
 	"crypto/sha1"
@@ -16,8 +21,6 @@ import (
 	"math/rand"
 	"path"
 	"regexp"
-	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -32,7 +35,8 @@ import (
 	"github.com/rclone/rclone/fs/operations"
 
 	"database/sql"
-    _ "github.com/go-sql-driver/mysql"
+
+	_ "github.com/go-sql-driver/mysql"
 )
 
 //
@@ -585,132 +589,10 @@ func (f *Fs) makeChunkName(filePath string, chunkNo int, ctrlType, xactID string
 	return ".cache/" + name + tempSuffix
 }
 
-// parseChunkName checks whether given file path belongs to
-// a chunk and extracts chunk name parts.
-//
-// filePath can be name, relative or absolute path of a file.
-//
-// Returned parentPath is path of the composite file owning the chunk.
-// It's a non-empty string if valid chunk name is detected
-// or "" if it's not a chunk.
-// Other returned values depend on detected chunk type:
-// data or control, active or temporary:
-//
-// data chunk - the returned chunkNo is non-negative and ctrlType is ""
-// control chunk - the chunkNo is -1 and ctrlType is a non-empty string
-// active chunk - the returned xactID is ""
-// temporary chunk - the xactID is a non-empty string
-func (f *Fs) parseChunkName(filePath string) (parentPath string, chunkNo int, ctrlType, xactID string) {
-	return
-	fs.Debugf("parseChunkName","%s",filePath)
-	dir, name := path.Split(filePath)
-	match := f.nameRegexp.FindStringSubmatch(name)
-	if match == nil || match[1] == "" {
-		return "", -1, "", ""
-	}
-	var err error
 
-	chunkNo = -1
-	if match[2] != "" {
-		if chunkNo, err = strconv.Atoi(match[2]); err != nil {
-			chunkNo = -1
-		}
-		if chunkNo -= f.opt.StartFrom; chunkNo < 0 {
-			fs.Infof(f, "invalid data chunk number in file %q", name)
-			return "", -1, "", ""
-		}
-	}
 
-	if match[4] != "" {
-		xactID = match[4]
-	}
-	if match[5] != "" {
-		// old-style temporary suffix
-		number, err := strconv.ParseInt(match[5], 10, 64)
-		if err != nil || number < 0 {
-			fs.Infof(f, "invalid old-style transaction number in file %q", name)
-			return "", -1, "", ""
-		}
-		// convert old-style transaction number to base-36 transaction ID
-		xactID = fmt.Sprintf(tempSuffixFormat, strconv.FormatInt(number, 36))
-		xactID = xactID[1:] // strip leading underscore
-	}
 
-	parentPath = dir + match[1]
-	ctrlType = match[3]
-	return
-}
 
-// forbidChunk prints error message or raises error if file is chunk.
-// First argument sets log prefix, use `false` to suppress message.
-func (f *Fs) forbidChunk(o interface{}, filePath string) error {
-	if parentPath, _, _, _ := f.parseChunkName(filePath); parentPath != "" {
-		if f.opt.FailHard {
-			return fmt.Errorf("chunk overlap with %q", parentPath)
-		}
-		if boolVal, isBool := o.(bool); !isBool || boolVal {
-			fs.Errorf(o, "chunk overlap with %q", parentPath)
-		}
-	}
-	return nil
-}
-
-// newXactID produces a sufficiently random transaction identifier.
-//
-// The temporary suffix mask allows identifiers consisting of 4-9
-// base-36 digits (ie. digits 0-9 or lowercase letters a-z).
-// The identifiers must be unique between transactions running on
-// the single file in parallel.
-//
-// Currently the function produces 6-character identifiers.
-// Together with underscore this makes a 7-character temporary suffix.
-//
-// The first 4 characters isolate groups of transactions by time intervals.
-// The maximum length of interval is base-36 "zzzz" ie. 1,679,615 seconds.
-// The function rather takes a maximum prime closest to this number
-// (see https://primes.utm.edu) as the interval length to better safeguard
-// against repeating pseudo-random sequences in cases when rclone is
-// invoked from a periodic scheduler like unix cron.
-// Thus, the interval is slightly more than 19 days 10 hours 33 minutes.
-//
-// The remaining 2 base-36 digits (in the range from 0 to 1295 inclusive)
-// are taken from the local random source.
-// This provides about 0.1% collision probability for two parallel
-// operations started at the same second and working on the same file.
-//
-// Non-empty filePath argument enables probing for existing temporary chunk
-// to further eliminate collisions.
-func (f *Fs) newXactID(ctx context.Context, filePath string) (xactID string, err error) {
-	const closestPrimeZzzzSeconds = 1679609
-	const maxTwoBase36Digits = 1295
-
-	unixSec := time.Now().Unix()
-	if unixSec < 0 {
-		unixSec = -unixSec // unlikely but the number must be positive
-	}
-	circleSec := unixSec % closestPrimeZzzzSeconds
-	first4chars := strconv.FormatInt(circleSec, 36)
-
-	for tries := 0; tries < maxTransactionProbes; tries++ {
-		f.xactIDMutex.Lock()
-		randomness := f.xactIDRand.Int63n(maxTwoBase36Digits + 1)
-		f.xactIDMutex.Unlock()
-
-		last2chars := strconv.FormatInt(randomness, 36)
-		xactID = fmt.Sprintf("%04s%02s", first4chars, last2chars)
-
-		if filePath == "" {
-			return
-		}
-		probeChunk := f.makeChunkName(filePath, 0, "", xactID)
-		_, probeErr := f.base.NewObject(ctx, probeChunk)
-		if probeErr != nil {
-			return
-		}
-	}
-
-	return "", fmt.Errorf("can't setup transaction for %s", filePath)
-}
 
 // List the objects and directories in dir into entries.
 // The entries can be returned in any order but should be
@@ -773,6 +655,7 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 		md5 string `json:"md5"`
 		sha1 string `json:"sha1"`
 		size int64 `json:"size"`
+		chunks int `json:"chunks"`
 	}
 
 	if dir != "" {
@@ -814,7 +697,7 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 	}
 	for index.Next() {
 		var entry mysqlEntry
-		err = index.Scan(&entry.ID, &entry.Parent, &entry.Type, &entry.Name, &entry.ModTime, &entry.md5, &entry.sha1, &entry.size)
+		err = index.Scan(&entry.ID, &entry.Parent, &entry.Type, &entry.Name, &entry.ModTime, &entry.md5, &entry.sha1, &entry.size, &entry.chunks)
 		if err != nil {
 			panic(err.Error())
 		}
@@ -831,44 +714,21 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 		// file
 		if entry.Type == 2 {
 			
-			o := &Object{
+			 o := &Object{
 				f:     f,
 				remote: f.addSlash(dir)+entry.Name,
 				modTime: time.Unix(0,entry.ModTime),
 				size: entry.size,
-			}
-			c:= &Object{
-				f:     f,
-				remote: "muh.0",
-				modTime: time.Unix(0,entry.ModTime),
-				size: 200,
+				main: nil,
+				chunksC: entry.chunks,
+				chunks: nil,
+				md5: entry.md5,
+				sha1: entry.sha1,
+			} 
 
-			}
-			c1:= &Object{
-				f:     f,
-				remote: "muh.1",
-				modTime: time.Unix(0,entry.ModTime),
-				size: 200,
-
-			}
-			c2:= &Object{
-				f:     f,
-				remote: "muh.2",
-				modTime: time.Unix(0,entry.ModTime),
-				size: 200,
-
-			}
-			c3:= &Object{
-				f:     f,
-				remote: "muh.3",
-				modTime: time.Unix(0,entry.ModTime),
-				size: 130,
-				
-
-			}
-			o.isFull=true
-			o.chunks = append(o.chunks, c,c1,c2,c3)
+			//o.chunks = append(o.chunks, b1,b2,b3,b4)
 			//nentry := fs.Object( f.addSlash(dir) + entry.Name, time.Unix(0,entry.ModTime))
+			//b := f.newObject(o.remote,o,o.chunks)
 			entries = append(entries, o)
 		}
 	} 
@@ -901,134 +761,10 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 // of listing recursively than doing a directory traversal.
 func (f *Fs) ListR(ctx context.Context, dir string, callback fs.ListRCallback) (err error) {
 	fs.Debugf("ListR","go")
-	do := f.base.Features().ListR
-	return do(ctx, dir, func(entries fs.DirEntries) error {
-		newEntries, err := f.processEntries(ctx, entries, dir)
-		if err != nil {
-			return err
-		}
-		return callback(newEntries)
-	})
+	return nil
 }
 
-// processEntries assembles chunk entries into composite entries
-func (f *Fs) processEntries(ctx context.Context, origEntries fs.DirEntries, dirPath string) (newEntries fs.DirEntries, err error) {
-	var sortedEntries fs.DirEntries
-	if f.dirSort {
-		// sort entries so that meta objects go before their chunks
-		sortedEntries = make(fs.DirEntries, len(origEntries))
-		copy(sortedEntries, origEntries)
-		sort.Sort(sortedEntries)
-	} else {
-		sortedEntries = origEntries
-	}
 
-	byRemote := make(map[string]*Object)
-	badEntry := make(map[string]bool)
-	isSubdir := make(map[string]bool)
-	txnByRemote := map[string]string{}
-
-	var tempEntries fs.DirEntries
-	for _, dirOrObject := range sortedEntries {
-		switch entry := dirOrObject.(type) {
-		case fs.Object:
-			remote := entry.Remote()
-			mainRemote, chunkNo, ctrlType, xactID := f.parseChunkName(remote)
-			if mainRemote == "" {
-				// this is meta object or standalone file
-				object := f.newObject("", entry, nil)
-				byRemote[remote] = object
-				tempEntries = append(tempEntries, object)
-				if f.useNoRename {
-					txnByRemote[remote], err = object.readXactID(ctx)
-					if err != nil {
-						return nil, err
-					}
-				}
-
-				
-
-
-				break
-			}
-			// this is some kind of chunk
-			// metobject should have been created above if present
-			mainObject := byRemote[mainRemote]
-			isSpecial := xactID != txnByRemote[mainRemote] || ctrlType != ""
-			if mainObject == nil && f.useMeta && !isSpecial {
-				fs.Debugf(f, "skip orphan data chunk %q", remote)
-				break
-			}
-			if mainObject == nil && !f.useMeta {
-				// this is the "nometa" case
-				// create dummy chunked object without metadata
-				mainObject = f.newObject(mainRemote, nil, nil)
-				byRemote[mainRemote] = mainObject
-				if !badEntry[mainRemote] {
-					tempEntries = append(tempEntries, mainObject)
-				}
-			}
-			if isSpecial {
-				if revealHidden {
-					fs.Infof(f, "ignore non-data chunk %q", remote)
-				}
-				// need to read metadata to ensure actual object type
-				// no need to read if metaobject is too big or absent,
-				// use the fact that before calling validate()
-				// the `size` field caches metaobject size, if any
-				if f.useMeta && mainObject != nil && mainObject.size <= maxMetadataSize {
-					mainObject.unsure = true
-				}
-				break
-			}
-			if err := mainObject.addChunk(entry, chunkNo); err != nil {
-				if f.opt.FailHard {
-					return nil, err
-				}
-				badEntry[mainRemote] = true
-			}
-		case fs.Directory:
-			isSubdir[entry.Remote()] = true
-			wrapDir := fs.NewDirCopy(ctx, entry)
-			wrapDir.SetRemote(entry.Remote())
-			tempEntries = append(tempEntries, wrapDir)
-		default:
-			if f.opt.FailHard {
-				return nil, fmt.Errorf("unknown object type %T", entry)
-			}
-			fs.Debugf(f, "unknown object type %T", entry)
-		}
-	}
-
-	for _, entry := range tempEntries {
-		if object, ok := entry.(*Object); ok {
-			remote := object.Remote()
-			if isSubdir[remote] {
-				if f.opt.FailHard {
-					return nil, fmt.Errorf("%q is both meta object and directory", remote)
-				}
-				badEntry[remote] = true // fall thru
-			}
-			if badEntry[remote] {
-				fs.Debugf(f, "invalid directory entry %q", remote)
-				continue
-			}
-			if err := object.validate(); err != nil {
-				if f.opt.FailHard {
-					return nil, err
-				}
-				fs.Debugf(f, "invalid chunks in object %q", remote)
-				continue
-			}
-		}
-		newEntries = append(newEntries, entry)
-	}
-
-	if f.dirSort {
-		sort.Sort(newEntries)
-	}
-	return newEntries, nil
-}
 
 // NewObject finds the Object at remote.
 //
@@ -1041,218 +777,19 @@ func (f *Fs) processEntries(ctx context.Context, origEntries fs.DirEntries, dirP
 // but opening even a small file can be slow on some backends.
 //
 func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
-	return f.scanObject(ctx, remote, false)
+	fs.Debugf("NewObject","run")
+	return nil, nil
 }
 
 // scanObject is like NewObject with optional quick scan mode.
 // The quick mode avoids directory requests other than `List`,
 // ignores non-chunked objects and skips chunk size checks.
 func (f *Fs) scanObject(ctx context.Context, remote string, quickScan bool) (fs.Object, error) {
-	if err := f.forbidChunk(false, remote); err != nil {
-		return nil, fmt.Errorf("can't access: %w", err)
-	}
-
-	var (
-		o             *Object
-		baseObj       fs.Object
-		currentXactID string
-		err           error
-		sameMain      bool
-	)
-
-	if f.useMeta {
-		baseObj, err = f.base.NewObject(ctx, remote)
-		if err != nil {
-			return nil, err
-		}
-		remote = baseObj.Remote()
-
-		// Chunker's meta object cannot be large and maxMetadataSize acts
-		// as a hard limit. Anything larger than that is treated as a
-		// non-chunked file without even checking its contents, so it's
-		// paramount to prevent metadata from exceeding the maximum size.
-		// Anything smaller is additionally checked for format.
-		o = f.newObject("", baseObj, nil)
-		if o.size > maxMetadataSize {
-			return o, nil
-		}
-	} else {
-		// Metadata is disabled, hence this is either a multi-chunk
-		// composite file without meta object or a non-chunked file.
-		// Create an empty wrapper here, scan directory to determine
-		// which case it is and postpone reading if it's the latter one.
-		o = f.newObject(remote, nil, nil)
-	}
-
-	// If the object is small, it's probably a meta object.
-	// However, composite file must have data chunks besides it.
-	// Scan directory for possible data chunks now and decide later on.
-	dir := path.Dir(strings.TrimRight(remote, "/"))
-	if dir == "." {
-		dir = ""
-	}
-	entries, err := f.base.List(ctx, dir)
-	switch err {
-	case nil:
-		// OK, fall thru
-	case fs.ErrorDirNotFound:
-		entries = nil
-	default:
-		return nil, fmt.Errorf("can't detect composite file: %w", err)
-	}
-
-	if f.useNoRename {
-		currentXactID, err = o.readXactID(ctx)
-		if err != nil {
-			return nil, err
-		}
-	}
-	caseInsensitive := f.features.CaseInsensitive
-
-	for _, dirOrObject := range entries {
-		entry, ok := dirOrObject.(fs.Object)
-		if !ok {
-			continue
-		}
-		entryRemote := entry.Remote()
-		if !caseInsensitive && !strings.Contains(entryRemote, remote) {
-			continue // bypass regexp to save cpu
-		}
-		mainRemote, chunkNo, ctrlType, xactID := f.parseChunkName(entryRemote)
-		if mainRemote == "" {
-			continue // skip non-chunks
-		}
-		if caseInsensitive {
-			sameMain = strings.EqualFold(mainRemote, remote)
-		} else {
-			sameMain = mainRemote == remote
-		}
-		if !sameMain {
-			continue // skip alien chunks
-		}
-		if ctrlType != "" || xactID != currentXactID {
-			if f.useMeta {
-				// temporary/control chunk calls for lazy metadata read
-				o.unsure = true
-			}
-			continue
-		}
-		//fs.Debugf(f, "%q belongs to %q as chunk %d", entryRemote, mainRemote, chunkNo)
-		if err := o.addChunk(entry, chunkNo); err != nil {
-			return nil, err
-		}
-	}
-
-	if o.main == nil && (o.chunks == nil || len(o.chunks) == 0) {
-		// Scanning hasn't found data chunks with conforming names.
-		if f.useMeta || quickScan {
-			// Metadata is required but absent and there are no chunks.
-			return nil, fs.ErrorObjectNotFound
-		}
-
-		// Data chunks are not found and metadata is disabled.
-		// Thus, we are in the "latter case" from above.
-		// Let's try the postponed reading of a non-chunked file and add it
-		// as a single chunk to the empty composite wrapper created above
-		// with nil metadata.
-		baseObj, err = f.base.NewObject(ctx, remote)
-		if err == nil {
-			err = o.addChunk(baseObj, 0)
-		}
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	// This is either a composite object with metadata or a non-chunked
-	// file without metadata. Validate it and update the total data size.
-	// As an optimization, skip metadata reading here - we will call
-	// readMetadata lazily when needed (reading can be expensive).
-	if !quickScan {
-		if err := o.validate(); err != nil {
-			return nil, err
-		}
-	}
-	return o, nil
+	fs.Debugf("scanObject","run")
+	return nil, nil
 }
 
-// readMetadata reads composite object metadata and caches results,
-// in case of critical errors metadata is not cached.
-// Returns ErrMetaUnknown if an unsupported metadata format is detected.
-// If object is not chunked but marked by List or NewObject for recheck,
-// readMetadata will attempt to parse object as composite with fallback
-// to non-chunked representation if the attempt fails.
-func (o *Object) readMetadata(ctx context.Context) error {
-	fs.Debugf("readMetadata","run")
-	// return quickly if metadata is absent or has been already cached
-	if !o.f.useMeta {
-		o.isFull = true
-	}
-	if o.isFull {
-		return nil
-	}
-	if !o.isComposite() && !o.unsure {
-		// this for sure is a non-chunked standalone file
-		o.isFull = true
-		return nil
-	}
 
-	// validate metadata
-	metaObject := o.main
-	if metaObject.Size() > maxMetadataSize {
-		if o.unsure {
-			// this is not metadata but a foreign object
-			o.unsure = false
-			o.chunks = nil  // make isComposite return false
-			o.isFull = true // cache results
-			return nil
-		}
-		return ErrMetaTooBig
-	}
-
-	// size is within limits, perform consistency checks
-	reader, err := metaObject.Open(ctx)
-	if err != nil {
-		return err
-	}
-	metadata, err := ioutil.ReadAll(reader)
-	_ = reader.Close() // ensure file handle is freed on windows
-	if err != nil {
-		return err
-	}
-
-	switch o.f.opt.MetaFormat {
-	case "simplejson":
-		metaInfo, madeByChunker, err := unmarshalSimpleJSON(ctx, metaObject, metadata)
-		if o.unsure {
-			o.unsure = false
-			if !madeByChunker {
-				// this is not metadata but a foreign object
-				o.chunks = nil  // make isComposite return false
-				o.isFull = true // cache results
-				return nil
-			}
-		}
-		switch err {
-		case nil:
-			// fall thru
-		case ErrMetaTooBig, ErrMetaUnknown:
-			return err // return these errors unwrapped for unit tests
-		default:
-			return fmt.Errorf("invalid metadata: %w", err)
-		}
-		if o.size != metaInfo.Size() || len(o.chunks) != metaInfo.nChunks {
-			return errors.New("metadata doesn't match file size")
-		}
-		o.md5 = metaInfo.md5
-		o.sha1 = metaInfo.sha1
-		o.xactID = metaInfo.xactID
-	}
-
-	o.isFull = true // cache results
-	o.xIDCached = true
-	return nil
-}
 
 // readXactID returns the transaction ID stored in the passed metadata object
 func (o *Object) readXactID(ctx context.Context) (xactID string, err error) {
@@ -1318,6 +855,7 @@ func (f *Fs) put(
 		c := f.newChunkingReader(src)
 		
 		
+
 		/* defer func() {
 			if err != nil {
 				c.rollback(ctx, metaObject)
@@ -1362,6 +900,15 @@ func (f *Fs) put(
 			
 
 		}
+		if f.useMD5 {
+			c.md5, _ = src.Hash(ctx,hash.MD5)
+		}
+		if f.useSHA1 {
+			c.sha1, _ = src.Hash(ctx,hash.MD5)
+		}
+		
+		//md5, _ := src.Hash(ctx,hash.MD5)
+		//sha1, _ := src.Hash(ctx,hash.SHA1)
 		fs.Debugf("done","d")
 		/* info := f.wrapInfo(src, "123", c.sizeTotal)
 		_, errChunk := basePut(ctx, wrapIn, info, options...)
@@ -1373,6 +920,8 @@ func (f *Fs) put(
 			main:   metaObject,
 			size:   c.sizeTotal,
 			f:      f,
+			md5:	c.md5,
+			sha1: c.sha1,
 			//chunks: chunks,
 		}
 		//o := f.newObject("", metaObject, c.chunks)
@@ -1385,7 +934,7 @@ func (f *Fs) put(
 		di, fi := path.Split(path.Join(f.oroot,remote))
 		//di = f.cleanFolderSlashes(di)
 		fs.Debugf("put new","di: %s fi: %s",di,fi)
-		f.mysqlQuery("replace into meta (id,parent,type,name,modtime,md5,sha1,size) values (?,?,?,?,?,?,?,?)",f.makeSha1FromString(f.prefixSlash(di+fi)),f.makeSha1FromString(f.prefixSlash(f.cleanFolderSlashes(di))),2,fi,src.ModTime(ctx).UnixNano(),c.md5,c.sha1,c.sizeTotal)
+		f.mysqlQuery("replace into meta (id,parent,type,name,modtime,md5,sha1,size,chunks) values (?,?,?,?,?,?,?,?,?)",f.makeSha1FromString(f.prefixSlash(di+fi)),f.makeSha1FromString(f.prefixSlash(f.cleanFolderSlashes(di))),2,fi,src.ModTime(ctx).UnixNano(),o.md5,o.sha1,c.sizeTotal,c.chunkNo)
 		o.size = c.sizeTotal
 		return o, nil
 	
@@ -1480,6 +1029,7 @@ func (c *chunkingReader) updateHashes() {
 
 // Note: Read is not called if wrapped remote performs put by hash.
 func (c *chunkingReader) Read(buf []byte) (bytesRead int, err error) {
+	fs.Debugf("(c *chunkingReader) Read","bytes: %s",bytesRead)
 	if c.chunkLimit <= 0 {
 		// Chunk complete - switch to next one.
 		// Note #1:
@@ -1804,178 +1354,19 @@ func (f *Fs) Purge(ctx context.Context, dir string) error {
 // the `delete hidden` flag above or at least the user has been warned.
 //
 func (o *Object) Remove(ctx context.Context) (err error) {
-	if err := o.f.forbidChunk(o, o.Remote()); err != nil {
-		// operations.Move can still call Remove if chunker's Move refuses
-		// to corrupt file in hard mode. Hence, refuse to Remove, too.
-		return fmt.Errorf("refuse to corrupt: %w", err)
-	}
-	if err := o.readMetadata(ctx); err == ErrMetaUnknown {
-		// Proceed but warn user that unexpected things can happen.
-		fs.Errorf(o, "Removing a file with unsupported metadata: %v", err)
-	}
-
-	// Remove non-chunked file or meta object of a composite file.
-	if o.main != nil {
-		err = o.main.Remove(ctx)
-	}
-
-	// Remove only active data chunks, ignore any temporary chunks that
-	// might probably be created in parallel by other transactions.
-	for _, chunk := range o.chunks {
-		chunkErr := chunk.Remove(ctx)
-		if err == nil {
-			err = chunkErr
-		}
-	}
-
-	// There are no known control chunks to remove atm.
-	return err
+	fs.Debugf("Remove","run")
+	return nil
 }
 
 // copyOrMove implements copy or move
 func (f *Fs) copyOrMove(ctx context.Context, o *Object, remote string, do copyMoveFn, md5, sha1, opName string) (fs.Object, error) {
 	fs.Debugf("copyOrMove","run")
-	if err := f.forbidChunk(o, remote); err != nil {
-		return nil, fmt.Errorf("can't %s: %w", opName, err)
-	}
-	if err := o.readMetadata(ctx); err != nil {
-		// Refuse to copy/move composite files with invalid or future
-		// metadata format which might involve unsupported chunk types.
-		return nil, fmt.Errorf("can't %s this file: %w", opName, err)
-	}
-	if !o.isComposite() {
-		fs.Debugf(o, "%s non-chunked object...", opName)
-		oResult, err := do(ctx, o.mainChunk(), remote) // chain operation to a single wrapped chunk
-		if err != nil {
-			return nil, err
-		}
-		return f.newObject("", oResult, nil), nil
-	}
-
-	fs.Debugf(o, "%s %d data chunks...", opName, len(o.chunks))
-	mainRemote := o.remote
-	var newChunks []fs.Object
-	var err error
-
-	// Copy/move active data chunks.
-	// Ignore possible temporary chunks being created by parallel operations.
-	for _, chunk := range o.chunks {
-		chunkRemote := chunk.Remote()
-		if !strings.HasPrefix(chunkRemote, mainRemote) {
-			err = fmt.Errorf("invalid chunk name %q", chunkRemote)
-			break
-		}
-		chunkSuffix := chunkRemote[len(mainRemote):]
-		chunkResult, err := do(ctx, chunk, remote+chunkSuffix)
-		if err != nil {
-			break
-		}
-		newChunks = append(newChunks, chunkResult)
-	}
-
-	// Copy or move old metadata.
-	// There are no known control chunks to move/copy atm.
-	var metaObject fs.Object
-	if err == nil && o.main != nil {
-		metaObject, err = do(ctx, o.main, remote)
-	}
-	if err != nil {
-		for _, chunk := range newChunks {
-			silentlyRemove(ctx, chunk)
-		}
-		return nil, err
-	}
-
-	// Create wrapping object, calculate and validate total size
-	newObj := f.newObject(remote, metaObject, newChunks)
-	err = newObj.validate()
-	if err != nil {
-		silentlyRemove(ctx, newObj)
-		return nil, err
-	}
-
-	// Update metadata
-	var metadata []byte
-	switch f.opt.MetaFormat {
-	case "simplejson":
-		metadata, err = marshalSimpleJSON(ctx, newObj.size, len(newChunks), md5, sha1, o.xactID)
-		if err == nil {
-			metaInfo := f.wrapInfo(metaObject, "", int64(len(metadata)))
-			err = newObj.main.Update(ctx, bytes.NewReader(metadata), metaInfo)
-		}
-	case "none":
-		if newObj.main != nil {
-			err = newObj.main.Remove(ctx)
-		}
-	}
-
-	// Return the composite object
-	if err != nil {
-		silentlyRemove(ctx, newObj)
-		return nil, err
-	}
-	return newObj, nil
+	return nil, nil
 }
 
 type copyMoveFn func(context.Context, fs.Object, string) (fs.Object, error)
 
-func (f *Fs) okForServerSide(ctx context.Context, src fs.Object, opName string) (obj *Object, md5, sha1 string, ok bool) {
-	var diff string
-	obj, ok = src.(*Object)
 
-	switch {
-	case !ok:
-		diff = "remote types"
-	case !operations.SameConfig(f.base, obj.f.base):
-		diff = "wrapped remotes"
-	case f.opt.ChunkSize != obj.f.opt.ChunkSize:
-		diff = "chunk sizes"
-	case f.opt.NameFormat != obj.f.opt.NameFormat:
-		diff = "chunk name formats"
-	case f.opt.StartFrom != obj.f.opt.StartFrom:
-		diff = "chunk numbering"
-	case f.opt.MetaFormat != obj.f.opt.MetaFormat:
-		diff = "meta formats"
-	}
-	if diff != "" {
-		fs.Debugf(src, "Can't %s - different %s", opName, diff)
-		ok = false
-		return
-	}
-
-	if obj.unsure {
-		// ensure object is composite if need to re-read metadata
-		_ = obj.readMetadata(ctx)
-	}
-	requireMetaHash := obj.isComposite() && f.opt.MetaFormat == "simplejson"
-	if !requireMetaHash && !f.hashAll {
-		ok = true // hash is not required for metadata
-		return
-	}
-
-	switch {
-	case f.useMD5:
-		md5, _ = obj.Hash(ctx, hash.MD5)
-		ok = md5 != ""
-		if !ok && f.hashFallback {
-			sha1, _ = obj.Hash(ctx, hash.SHA1)
-			ok = sha1 != ""
-		}
-	case f.useSHA1:
-		sha1, _ = obj.Hash(ctx, hash.SHA1)
-		ok = sha1 != ""
-		if !ok && f.hashFallback {
-			md5, _ = obj.Hash(ctx, hash.MD5)
-			ok = md5 != ""
-		}
-	default:
-		ok = false
-	}
-	if !ok {
-		fs.Debugf(src, "Can't %s - required hash not found", opName)
-	}
-	return
-}
 
 // Copy src to this remote using server-side copy operations.
 //
@@ -1988,15 +1379,7 @@ func (f *Fs) okForServerSide(ctx context.Context, src fs.Object, opName string) 
 // If it isn't possible then return fs.ErrorCantCopy
 func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
 	fs.Debugf("Copy","start")
-	baseCopy := f.base.Features().Copy
-	if baseCopy == nil {
-		return nil, fs.ErrorCantCopy
-	}
-	obj, md5, sha1, ok := f.okForServerSide(ctx, src, "copy")
-	if !ok {
-		return nil, fs.ErrorCantCopy
-	}
-	return f.copyOrMove(ctx, obj, remote, baseCopy, md5, sha1, "copy")
+	return nil, nil
 }
 
 // Move src to this remote using server-side move operations.
@@ -2010,14 +1393,7 @@ func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object,
 // If it isn't possible then return fs.ErrorCantMove
 func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
 	fs.Debugf("Move","start")
-	baseMove := func(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
-		return f.baseMove(ctx, src, remote, delNever)
-	}
-	obj, md5, sha1, ok := f.okForServerSide(ctx, src, "move")
-	if !ok {
-		return nil, fs.ErrorCantMove
-	}
-	return f.copyOrMove(ctx, obj, remote, baseMove, md5, sha1, "move")
+	return nil, nil
 }
 
 // baseMove chains to the wrapped Move or simulates it by Copy+Delete
@@ -2108,27 +1484,7 @@ func (f *Fs) SetWrapper(wrapper fs.Fs) {
 // Replace data chunk names by the name of composite file.
 // Ignore temporary and control chunks.
 func (f *Fs) ChangeNotify(ctx context.Context, notifyFunc func(string, fs.EntryType), pollIntervalChan <-chan time.Duration) {
-	do := f.base.Features().ChangeNotify
-	if do == nil {
-		return
-	}
-	wrappedNotifyFunc := func(path string, entryType fs.EntryType) {
-		//fs.Debugf(f, "ChangeNotify: path %q entryType %d", path, entryType)
-		if entryType == fs.EntryObject {
-			mainPath, _, _, xactID := f.parseChunkName(path)
-			metaXactID := ""
-			if f.useNoRename {
-				metaObject, _ := f.base.NewObject(ctx, mainPath)
-				dummyObject := f.newObject("", metaObject, nil)
-				metaXactID, _ = dummyObject.readXactID(ctx)
-			}
-			if mainPath != "" && xactID == metaXactID {
-				path = mainPath
-			}
-		}
-		notifyFunc(path, entryType)
-	}
-	do(ctx, wrappedNotifyFunc, pollIntervalChan)
+	fs.Debugf("ChangeNotify","run")
 }
 
 // Shutdown the backend, closing any background tasks and any
@@ -2146,6 +1502,7 @@ type Object struct {
 	remote    string
 	main      fs.Object   // meta object if file is composite, or wrapped non-chunked file, nil if meta format is 'none'
 	chunks    []fs.Object // active data chunks if file is composite, or wrapped file as a single chunk if meta format is 'none'
+	chunksC   int		  // chunk count
 	size      int64       // cached total size of chunks in a composite file or -1 for non-chunked files
 	isFull    bool        // true if metadata has been read
 	xIDCached bool        // true if xactID has been read
@@ -2157,28 +1514,7 @@ type Object struct {
 	f         *Fs
 }
 
-func (o *Object) addChunk(chunk fs.Object, chunkNo int) error {
-	if chunkNo < 0 {
-		return fmt.Errorf("invalid chunk number %d", chunkNo+o.f.opt.StartFrom)
-	}
-	if chunkNo == len(o.chunks) {
-		o.chunks = append(o.chunks, chunk)
-		return nil
-	}
-	if chunkNo > maxSafeChunkNumber {
-		return ErrChunkOverflow
-	}
-	if chunkNo > len(o.chunks) {
-		newChunks := make([]fs.Object, (chunkNo + 1), (chunkNo+1)*2)
-		copy(newChunks, o.chunks)
-		o.chunks = newChunks
-	}
-	if o.chunks[chunkNo] != nil {
-		return fmt.Errorf("duplicate chunk number %d", chunkNo+o.f.opt.StartFrom)
-	}
-	o.chunks[chunkNo] = chunk
-	return nil
-}
+
 
 // validate verifies the object internals and updates total size
 func (o *Object) validate() error {
@@ -2274,7 +1610,7 @@ func (o *Object) Size() int64 {
 // Storable returns whether object is storable
 func (o *Object) Storable() bool {
 	fs.Debugf("storable","run")
-	return o.mainChunk().Storable()
+	return true
 }
 
 // ModTime returns the modification time of the file
@@ -2287,10 +1623,8 @@ func (o *Object) ModTime(ctx context.Context) time.Time {
 // SetModTime sets the modification time of the file
 func (o *Object) SetModTime(ctx context.Context, mtime time.Time) error {
 	fs.Debugf("setmodtime","run")
-	if err := o.readMetadata(ctx); err != nil {
-		return err // refuse to act on unsupported format
-	}
-	return o.mainChunk().SetModTime(ctx, mtime)
+	return nil
+	//return o.mainChunk().SetModTime(ctx, mtime)
 }
 
 // Hash returns the selected checksum of the file.
@@ -2312,8 +1646,24 @@ func (o *Object) SetModTime(ctx context.Context, mtime time.Time) error {
 // on the level of wrapped remote but chunker is unaware of that.
 //
 func (o *Object) Hash(ctx context.Context, hashType hash.Type) (string, error) {
+	fs.Debugf("Hash","run md5: %s sha1: %s",o.md5,o.sha1)
 	//FIXME: hash
-	return "", nil
+	//return "", nil
+	//return o.Hash(ctx,hashType)
+	switch hashType {
+case hash.MD5:
+	if o.md5 == "" {
+		return "", nil
+	}
+	return o.md5, nil
+case hash.SHA1:
+	if o.sha1 == "" {
+		return "", nil
+	}
+	return o.sha1, nil
+default:
+	return "", hash.ErrUnsupported
+}
 	/* fs.Debugf("hash","run")
 	if err := o.readMetadata(ctx); err != nil {
 		return "", err // valid metadata is required to get hash, abort
@@ -2351,59 +1701,31 @@ func (o *Object) UnWrap() fs.Object {
 // Open opens the file for read.  Call Close() on the returned io.ReadCloser
 func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (rc io.ReadCloser, err error) {
 	fs.Debugf("open","run remote: %s %s",o.Remote(),o.chunks)
-
-	/* if err := o.readMetadata(ctx); err != nil {
-		// refuse to open unsupported format
-		return nil, fmt.Errorf("can't open: %w", err)
-	} */
-	/* if !o.isComposite() {
-		return o.mainChunk().Open(ctx, options...) // chain to wrapped non-chunked file
-	} */
-	var openOptions []fs.OpenOption
-	var offset, limit int64 = 0, -1
-
-	for _, option := range options {
-		switch opt := option.(type) {
-		case *fs.SeekOption:
-			offset = opt.Offset
-		case *fs.RangeOption:
-			offset, limit = opt.Decode(o.size)
-		default:
-			// pass Options on to the wrapped open, if appropriate
-			openOptions = append(openOptions, option)
+	
+	//return o.Open(ctx, options...)
+	if o.chunks == nil {
+		fs.Debugf("open","chunks nil")
+		for i := 0; i < o.chunksC; i++ {
+			fs.Debugf("new chunk:","%s","muh."+fmt.Sprint("",i))
+			chunk ,_ :=o.f.base.NewObject(ctx,"muh."+fmt.Sprint("",i))
+			o.chunks = append(o.chunks, chunk)
+			
 		}
 	}
-
-	/* if offset < 0 {
-		return nil, errors.New("invalid offset")
-	}
-	if limit < 0 {
-		limit = o.size - offset
-	} */
-
-	return o.newLinearReader(ctx, offset, limit, openOptions)
-
-	/* 
-	
-	if err := o.readMetadata(ctx); err != nil {
-		// refuse to open unsupported format
-		return nil, fmt.Errorf("can't open: %w", err)
-	}
-	if !o.isComposite() {
-		return o.mainChunk().Open(ctx, options...) // chain to wrapped non-chunked file
-	}
-
 	var openOptions []fs.OpenOption
 	var offset, limit int64 = 0, -1
 
 	for _, option := range options {
 		switch opt := option.(type) {
 		case *fs.SeekOption:
+			fs.Debugf("Open","seekOption opt.Offset: %s",opt.Offset)
 			offset = opt.Offset
 		case *fs.RangeOption:
+			fs.Debugf("open","range o.size: %s remote: %s",o.size,o.remote)
 			offset, limit = opt.Decode(o.size)
 		default:
 			// pass Options on to the wrapped open, if appropriate
+			fs.Debugf("Open","default %s",option)
 			openOptions = append(openOptions, option)
 		}
 	}
@@ -2412,10 +1734,12 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (rc io.Read
 		return nil, errors.New("invalid offset")
 	}
 	if limit < 0 {
+		fs.Debugf("Open","size: %s",o.size-offset)
 		limit = o.size - offset
 	}
 
-	return o.newLinearReader(ctx, offset, limit, openOptions) */
+	return o.newLinearReader(ctx, offset, limit, openOptions)
+	
 }
 
 // linearReader opens and reads file chunks sequentially, without read-ahead
@@ -2431,37 +1755,45 @@ type linearReader struct {
 }
 
 func (o *Object) newLinearReader(ctx context.Context, offset, limit int64, options []fs.OpenOption) (io.ReadCloser, error) {
-	fs.Debugf("newLinearReader","run")
+	
 	r := &linearReader{
 		ctx:     ctx,
 		chunks:  o.chunks,
 		options: options,
 		limit:   limit,
 	}
-
+	fs.Debugf("newLinearReader","run %s %s",o.remote,len(r.chunks))
 	// skip to chunk for given offset
 	err := io.EOF
 	for offset >= 0 && err != nil {
+		fs.Debugf("newLinearReader","nextChunk")
 		offset, err = r.nextChunk(offset)
+		fs.Debugf("newLinearReader","nextChunk offset: %s err: %s",offset,err)
 	}
+	
 	if err == nil || err == io.EOF {
+		//panic((""))
 		r.err = err
 		return r, nil
 	}
+	
 	return nil, err
 }
 
 func (r *linearReader) nextChunk(offset int64) (int64, error) {
-	fs.Debugf("(r *linearReader) nextChunk","run")
+	fs.Debugf("(r *linearReader) nextChunk","run offset: %s r.pos: %s lenChunks: %s",offset,r.pos,len(r.chunks))
+
 	if r.err != nil {
 		return -1, r.err
 	}
 	if r.pos >= len(r.chunks) || r.limit <= 0 || offset < 0 {
+		fs.Debugf("nextChunk","break %s %s %s",len(r.chunks),r.limit,offset)
 		return -1, io.EOF
 	}
 
 	chunk := r.chunks[r.pos]
 	count := chunk.Size()
+	fs.Debugf("nextChunk","chunk: %s count: %s",chunk,count)
 	r.pos++
 
 	if offset >= count {
@@ -2478,6 +1810,7 @@ func (r *linearReader) nextChunk(offset int64) (int64, error) {
 	}
 
 	reader, err := chunk.Open(r.ctx, options...)
+	fs.Debugf("nectChunk","chunk.Open")
 	if err != nil {
 		return -1, err
 	}
@@ -2488,16 +1821,21 @@ func (r *linearReader) nextChunk(offset int64) (int64, error) {
 }
 
 func (r *linearReader) Read(p []byte) (n int, err error) {
-	fs.Debugf("(r *linearReader) Read","run")
+	fs.Debugf("(r *linearReader) Read","run count: %s limit: %s pos: %s",r.count,r.limit,r.pos)
+	//panic("")
 	if r.err != nil {
+		fs.Debugf("(r *linearReader) Read","err: %s",r.err)
+		//panic(r.pos)
 		return 0, r.err
 	}
+	
 	if r.limit <= 0 {
 		r.err = io.EOF
 		return 0, io.EOF
 	}
-
+fs.Debugf("123","%s",r.count)
 	for r.count <= 0 {
+		
 		// current chunk has been read completely or its size is zero
 		off, err := r.nextChunk(0)
 		if off < 0 {

@@ -1,9 +1,11 @@
 // Package privacer provides wrappers for Fs and Object which split large files in chunks
-//TODO: delayed deletion. on file or dir remove only metadata delete. remove files later by command
+//TODO: delayed deletion. on file or dir remove only metadata delete. remove files later by command. bonbon .trash folder
 //TODO: folders and files additional random id needed for delayed delete.
 //TODO: SetModTime
 //TODO: move
 //TODO: remove
+//TODO: remove file to trash after up
+//TODO: cat file
 
 package privacer
 
@@ -656,6 +658,7 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 		sha1 string `json:"sha1"`
 		size int64 `json:"size"`
 		chunks int `json:"chunks"`
+		cName string `json:"cname"`
 	}
 
 	if dir != "" {
@@ -697,7 +700,7 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 	}
 	for index.Next() {
 		var entry mysqlEntry
-		err = index.Scan(&entry.ID, &entry.Parent, &entry.Type, &entry.Name, &entry.ModTime, &entry.md5, &entry.sha1, &entry.size, &entry.chunks)
+		err = index.Scan(&entry.ID, &entry.Parent, &entry.Type, &entry.Name, &entry.ModTime, &entry.md5, &entry.sha1, &entry.size, &entry.chunks, &entry.cName)
 		if err != nil {
 			panic(err.Error())
 		}
@@ -709,6 +712,7 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 		// dir
 		if entry.Type == 1 {
 			nentry := fs.NewDir( f.addSlash(dir) + entry.Name, time.Unix(0,entry.ModTime))
+			nentry.SetID(entry.ID)
 			entries = append(entries, nentry)
 		}
 		// file
@@ -724,6 +728,8 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 				chunks: nil,
 				md5: entry.md5,
 				sha1: entry.sha1,
+				mysqlID: entry.ID,
+				cName: entry.cName,
 			} 
 
 			//o.chunks = append(o.chunks, b1,b2,b3,b4)
@@ -873,25 +879,42 @@ func (f *Fs) put(
 		wrapIn := c.wrapStream(ctx, in, src)
 		
 		//body return check must be
-		c.chunkSize = 200
+		var min, max int64
+		if c.sizeTotal <= 1024 {
+			min = -1
+			max = -1
+		} else {
+			min = c.sizeTotal / 2 / 2
+			max = c.sizeTotal - min
+			c.chunkSize = max
+		}
+		
 		
 
+		cname := fmt.Sprint(time.Now().UnixNano())
+		fs.Debugf("cname sha1","%s",f.makeSha1FromString(cname))
 
 		for c.chunkNo = 0; !c.done; c.chunkNo++ {
 			//chunk size
-			c.chunkLimit = 200
+			if min >0 && max >0 {
+				c.chunkLimit = rand.Int63n(max - min) + min
+			}
 			size := c.sizeLeft
-			if size > c.chunkSize {
-				size = c.chunkSize
+			if size > c.chunkLimit {
+				size = c.chunkLimit
 			}
 			
-			info := f.wrapInfo(src, "muh." + fmt.Sprint(c.chunkNo), size)
+			info := f.wrapInfo(src, f.makeSha1FromString(cname+fmt.Sprint(c.chunkNo))[0:1] + "/" + cname + "." + fmt.Sprint(c.chunkNo), size)
 			
 			//FIXME: check for errors
 			_, err := basePut(ctx, wrapIn, info, options...)
 			if err != nil {
 				//return nil, err
 			}
+
+			//c.updateHashes()
+			//fs.Debugf("chunk hash","%s %s",c.md5,c.sha1)
+
 			if c.sizeLeft == 0 && !c.done {
 				// The file has been apparently put by hash, force completion.
 				c.done = true
@@ -900,12 +923,12 @@ func (f *Fs) put(
 			
 
 		}
-		if f.useMD5 {
+		/* if f.useMD5 {
 			c.md5, _ = src.Hash(ctx,hash.MD5)
 		}
 		if f.useSHA1 {
 			c.sha1, _ = src.Hash(ctx,hash.MD5)
-		}
+		} */
 		
 		//md5, _ := src.Hash(ctx,hash.MD5)
 		//sha1, _ := src.Hash(ctx,hash.SHA1)
@@ -915,6 +938,7 @@ func (f *Fs) put(
 		if errChunk != nil {
 			return nil, errChunk
 		} */
+		c.updateHashes()
 		o := &Object{
 			remote: remote,
 			main:   metaObject,
@@ -934,9 +958,13 @@ func (f *Fs) put(
 		di, fi := path.Split(path.Join(f.oroot,remote))
 		//di = f.cleanFolderSlashes(di)
 		fs.Debugf("put new","di: %s fi: %s",di,fi)
-		_r, _ :=f.mysqlQuery("replace into meta (id,parent,type,name,modtime,md5,sha1,size,chunks) values (?,?,?,?,?,?,?,?,?)",f.makeSha1FromString(f.prefixSlash(di+fi)),f.makeSha1FromString(f.prefixSlash(f.cleanFolderSlashes(di))),2,fi,src.ModTime(ctx).UnixNano(),o.md5,o.sha1,c.sizeTotal,c.chunkNo)
+		nid := f.makeSha1FromString(f.prefixSlash(di+fi))
+		pid := f.makeSha1FromString(f.prefixSlash(f.cleanFolderSlashes(di)))
+		_r, _ :=f.mysqlQuery("replace into meta (id,parent,type,name,modtime,md5,sha1,size,chunks,cname) values (?,?,?,?,?,?,?,?,?,?)",nid,pid,2,fi,src.ModTime(ctx).UnixNano(),o.md5,o.sha1,c.sizeTotal,c.chunkNo,cname)
 		defer _r.Close()
 		o.size = c.sizeTotal
+		o.mysqlID = nid
+		o.cName = cname
 		return o, nil
 	
 	
@@ -982,6 +1010,7 @@ func (c *chunkingReader) wrapStream(ctx context.Context, in io.Reader, src fs.Ob
 	case c.fs.useMD5:
 		srcObj := fs.UnWrapObjectInfo(src)
 		if srcObj != nil && srcObj.Fs().Features().SlowHash {
+			fs.Debugf("wrapStream","using md5")
 			fs.Debugf(src, "skip slow MD5 on source file, hashing in-transit")
 			c.hasher = md5.New()
 			break
@@ -996,6 +1025,7 @@ func (c *chunkingReader) wrapStream(ctx context.Context, in io.Reader, src fs.Ob
 	case c.fs.useSHA1:
 		srcObj := fs.UnWrapObjectInfo(src)
 		if srcObj != nil && srcObj.Fs().Features().SlowHash {
+			fs.Debugf("wrapStream","using sha1")
 			fs.Debugf(src, "skip slow SHA1 on source file, hashing in-transit")
 			c.hasher = sha1.New()
 			break
@@ -1010,6 +1040,7 @@ func (c *chunkingReader) wrapStream(ctx context.Context, in io.Reader, src fs.Ob
 	}
 
 	if c.hasher != nil {
+		fs.Debugf("wrapStream","hasher not nil")
 		baseIn = io.TeeReader(baseIn, c.hasher)
 	}
 	c.baseReader = baseIn
@@ -1505,6 +1536,7 @@ type Object struct {
 	main      fs.Object   // meta object if file is composite, or wrapped non-chunked file, nil if meta format is 'none'
 	chunks    []fs.Object // active data chunks if file is composite, or wrapped file as a single chunk if meta format is 'none'
 	chunksC   int		  // chunk count
+	cName     string      // chunk remote name
 	size      int64       // cached total size of chunks in a composite file or -1 for non-chunked files
 	isFull    bool        // true if metadata has been read
 	xIDCached bool        // true if xactID has been read
@@ -1513,6 +1545,7 @@ type Object struct {
 	md5       string
 	sha1      string
 	modTime   time.Time
+	mysqlID   string
 	f         *Fs
 }
 
@@ -1703,13 +1736,14 @@ func (o *Object) UnWrap() fs.Object {
 // Open opens the file for read.  Call Close() on the returned io.ReadCloser
 func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (rc io.ReadCloser, err error) {
 	fs.Debugf("open","run remote: %s %s",o.Remote(),o.chunks)
-	
+	//f.makeSha1FromString(cname+fmt.Sprint(c.chunkNo))[0:1]
 	//return o.Open(ctx, options...)
 	if o.chunks == nil {
 		fs.Debugf("open","chunks nil")
 		for i := 0; i < o.chunksC; i++ {
-			fs.Debugf("new chunk:","%s","muh."+fmt.Sprint("",i))
-			chunk ,_ :=o.f.base.NewObject(ctx,"muh."+fmt.Sprint("",i))
+			cn := o.f.makeSha1FromString(o.cName+fmt.Sprint(i))[0:1] + "/" + o.cName + "." + fmt.Sprint(i)
+			fs.Debugf("new chunk:","%s",cn)
+			chunk ,_ :=o.f.base.NewObject(ctx, cn)
 			o.chunks = append(o.chunks, chunk)
 			
 		}

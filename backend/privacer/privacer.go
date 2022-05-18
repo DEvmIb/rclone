@@ -5,8 +5,9 @@
 //TODO: move
 //TODO: remove
 //TODO: remove file to trash after up
-//TODO: cat file
-
+//TODO: defer external sql function how to
+//TODO: honor max chunk size
+//TODO: copy file to mount. will it instant added to mysql or on write-back-delay?
 package privacer
 
 import (
@@ -361,6 +362,19 @@ func NewFs(ctx context.Context, name, rpath string, m configmap.Mapper) (fs.Fs, 
 	return f, err
 }
 
+type mysqlEntry struct {
+	ID   string    `json:"id"`
+	Parent string `json:"parent"`
+	Type int `json:"type"`
+	Name string `json:"name"`
+	ModTime int64 `json:"modtime"`
+	md5 string `json:"md5"`
+	sha1 string `json:"sha1"`
+	size int64 `json:"size"`
+	chunks int `json:"chunks"`
+	cName string `json:"cname"`
+}
+
 // Options defines the configuration for this backend
 type Options struct {
 	Remote       string        `config:"remote"`
@@ -636,6 +650,87 @@ func (f *Fs) prefixSlash(path string) string {
 	return path
 }
 
+func (f *Fs) mysqlGetFile(id string) (obj *Object, error error) {
+	index, _ := f.mysqlQuery("select * from meta where type=2 and id=?",id)
+	defer index.Close()
+	index.Next()
+	var entry mysqlEntry
+	err := index.Scan(&entry.ID, &entry.Parent, &entry.Type, &entry.Name, &entry.ModTime, &entry.md5, &entry.sha1, &entry.size, &entry.chunks, &entry.cName)
+	if err == nil {
+		o := &Object{
+			f:     f,
+			remote: entry.Name,
+			modTime: time.Unix(0,entry.ModTime),
+			size: entry.size,
+			main: nil,
+			chunksC: entry.chunks,
+			chunks: nil,
+			md5: entry.md5,
+			sha1: entry.sha1,
+			mysqlID: entry.ID,
+			cName: entry.cName,
+		}
+		return o, nil
+	} else {
+		return nil, err
+	}
+}
+
+func (f *Fs) mysqlBuildList(dir string, nroot string) (entries fs.DirEntries, err error) {
+	entries = nil
+	index, _ := f.mysqlQuery("select * from meta where parent=?",f.makeSha1FromString(nroot))
+	defer index.Close()
+	if err != nil {
+		panic(err)
+	}
+
+	
+
+
+	for index.Next() {
+		var entry mysqlEntry
+		err = index.Scan(&entry.ID, &entry.Parent, &entry.Type, &entry.Name, &entry.ModTime, &entry.md5, &entry.sha1, &entry.size, &entry.chunks, &entry.cName)
+		if err != nil {
+			panic(err.Error())
+		}
+		fs.Debugf("id","%s",entry.ID)
+		/* if entry.ID == "" {
+			return nil, errors.New("dir not found")
+		} */
+		fs.Debugf("List","type: %s name: %s parrent: %s",entry.Type,entry.Name,entry.Parent)
+		// dir
+		if entry.Type == 1 {
+			nentry := fs.NewDir( f.addSlash(dir) + entry.Name, time.Unix(0,entry.ModTime))
+			nentry.SetID(entry.ID)
+			entries = append(entries, nentry)
+		}
+		// file
+		if entry.Type == 2 {
+			
+			o := &Object{
+				f:     f,
+				remote: f.addSlash(dir)+entry.Name,
+				modTime: time.Unix(0,entry.ModTime),
+				size: entry.size,
+				main: nil,
+				chunksC: entry.chunks,
+				chunks: nil,
+				md5: entry.md5,
+				sha1: entry.sha1,
+				mysqlID: entry.ID,
+				cName: entry.cName,
+			} 
+
+			//o.chunks = append(o.chunks, b1,b2,b3,b4)
+			//nentry := fs.Object( f.addSlash(dir) + entry.Name, time.Unix(0,entry.ModTime))
+			//b := f.newObject(o.remote,o,o.chunks)
+			entries = append(entries, o)
+		}
+	}
+
+	return
+}
+
 func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err error) {
 	fs.Debugf("List","go: %s",dir)
 	//entries, err = f.base.List(ctx, dir)
@@ -647,19 +742,6 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 
 	
 	entries = nil
-
-	type mysqlEntry struct {
-		ID   string    `json:"id"`
-		Parent string `json:"parent"`
-		Type int `json:"type"`
-		Name string `json:"name"`
-		ModTime int64 `json:"modtime"`
-		md5 string `json:"md5"`
-		sha1 string `json:"sha1"`
-		size int64 `json:"size"`
-		chunks int `json:"chunks"`
-		cName string `json:"cname"`
-	}
 
 	if dir != "" {
 		// get parents
@@ -688,56 +770,25 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 	//_, dname := path.Split(root)
 	fs.Debugf("List","dir: %s root: %s nroot: %s sum: %s",dir,f.oroot,nroot,f.makeSha1FromString(nroot))
 	
-	if !f.mysqlDirExists(nroot) {
-		return nil, errors.New("dir not found")
+	isdir := f.mysqlDirExists(nroot)
+	isfile := f.mysqlIsFile(nroot)
+	fs.Debugf("list","isD: %s isF: %s",isdir,isfile)
+	if !isdir && !isfile {
+		return nil, nil
 	}
 
-	index, err := f.mysqlQuery("select * from meta where parent=?",f.makeSha1FromString(nroot))
-	defer index.Close()
+	if isfile {
+		//TODO: error check
+		entry, _ := f.mysqlGetFile(f.makeSha1FromString(nroot))
+		entries = append(entries, entry)
+		return
+	}
+
+
+	
 	//fs.Debugf("d","%s",index)
-	if err != nil {
-		panic(err)
-	}
-	for index.Next() {
-		var entry mysqlEntry
-		err = index.Scan(&entry.ID, &entry.Parent, &entry.Type, &entry.Name, &entry.ModTime, &entry.md5, &entry.sha1, &entry.size, &entry.chunks, &entry.cName)
-		if err != nil {
-			panic(err.Error())
-		}
-		fs.Debugf("id","%s",entry.ID)
-		/* if entry.ID == "" {
-			return nil, errors.New("dir not found")
-		} */
-		fs.Debugf("List","type: %s name: %s parrent: %s",entry.Type,entry.Name,entry.Parent)
-		// dir
-		if entry.Type == 1 {
-			nentry := fs.NewDir( f.addSlash(dir) + entry.Name, time.Unix(0,entry.ModTime))
-			nentry.SetID(entry.ID)
-			entries = append(entries, nentry)
-		}
-		// file
-		if entry.Type == 2 {
-			
-			 o := &Object{
-				f:     f,
-				remote: f.addSlash(dir)+entry.Name,
-				modTime: time.Unix(0,entry.ModTime),
-				size: entry.size,
-				main: nil,
-				chunksC: entry.chunks,
-				chunks: nil,
-				md5: entry.md5,
-				sha1: entry.sha1,
-				mysqlID: entry.ID,
-				cName: entry.cName,
-			} 
-
-			//o.chunks = append(o.chunks, b1,b2,b3,b4)
-			//nentry := fs.Object( f.addSlash(dir) + entry.Name, time.Unix(0,entry.ModTime))
-			//b := f.newObject(o.remote,o,o.chunks)
-			entries = append(entries, o)
-		}
-	} 
+	//TODO: err check
+	entries, _ = f.mysqlBuildList(dir, nroot)
     
 	
 	// file
@@ -847,7 +898,7 @@ func (f *Fs) put(
 		fs.Debugf("put","srcro: %s srcre: %s remote: %s oroot: %s",src.Fs().Root(),src.Remote(),remote,f.oroot)
 		fs.Debugf("root","%s",f.oroot)
 		
-		
+		//fs.Debugf("put","file %s",f.re)
 
 		var metaObject fs.Object
 
@@ -884,9 +935,10 @@ func (f *Fs) put(
 			min = -1
 			max = -1
 		} else {
-			min = c.sizeTotal / 2 / 2
+			s := c.sizeTotal / 2 / 2
+			min = s
 			max = c.sizeTotal - min
-			c.chunkSize = max
+			//c.chunkSize = max
 		}
 		
 		
@@ -897,6 +949,7 @@ func (f *Fs) put(
 		for c.chunkNo = 0; !c.done; c.chunkNo++ {
 			//chunk size
 			if min >0 && max >0 {
+				rand.Seed(time.Now().UnixNano())
 				c.chunkLimit = rand.Int63n(max - min) + min
 			}
 			size := c.sizeLeft
@@ -960,11 +1013,19 @@ func (f *Fs) put(
 		fs.Debugf("put new","di: %s fi: %s",di,fi)
 		nid := f.makeSha1FromString(f.prefixSlash(di+fi))
 		pid := f.makeSha1FromString(f.prefixSlash(f.cleanFolderSlashes(di)))
-		_r, _ :=f.mysqlQuery("replace into meta (id,parent,type,name,modtime,md5,sha1,size,chunks,cname) values (?,?,?,?,?,?,?,?,?,?)",nid,pid,2,fi,src.ModTime(ctx).UnixNano(),o.md5,o.sha1,c.sizeTotal,c.chunkNo,cname)
+
+		fs.Debugf("putid","%s",nid)
+		if f.mysqlIsFileByID(nid) {
+			fs.Debugf("put","file exist move to trash")
+			f.mysqlDeleteFile(nid)
+		}
+		modT := src.ModTime(ctx).UnixNano()
+		_r, _ :=f.mysqlQuery("replace into meta (id,parent,type,name,modtime,md5,sha1,size,chunks,cname) values (?,?,?,?,?,?,?,?,?,?)",nid,pid,2,fi,modT,o.md5,o.sha1,c.sizeTotal,c.chunkNo,cname)
 		defer _r.Close()
 		o.size = c.sizeTotal
 		o.mysqlID = nid
 		o.cName = cname
+		o.modTime = src.ModTime(ctx)
 		return o, nil
 	
 	
@@ -1125,30 +1186,6 @@ func (c *chunkingReader) dummyRead(in io.Reader, size int64) error {
 	return nil
 }
 
-// rollback removes uploaded temporary chunks
-func (c *chunkingReader) rollback(ctx context.Context, metaObject fs.Object) {
-	if metaObject != nil {
-		c.chunks = append(c.chunks, metaObject)
-	}
-	for _, chunk := range c.chunks {
-		if err := chunk.Remove(ctx); err != nil {
-			fs.Errorf(chunk, "Failed to remove temporary chunk: %v", err)
-		}
-	}
-}
-
-func (f *Fs) removeOldChunks(ctx context.Context, remote string) {
-	oldFsObject, err := f.NewObject(ctx, remote)
-	if err == nil {
-		oldObject := oldFsObject.(*Object)
-		for _, chunk := range oldObject.chunks {
-			if err := chunk.Remove(ctx); err != nil {
-				fs.Errorf(chunk, "Failed to remove old chunk: %v", err)
-			}
-		}
-	}
-}
-
 // Put into the remote path with the given modTime and size.
 //
 // May create the object even if it returns an error - if so
@@ -1231,6 +1268,7 @@ func (f *Fs) cleanFolderSlashes(path string) string {
 }
 
 func (f *Fs) mysqlQuery(_query string, args ...interface{}) (res *sql.Rows, err error) {
+	fs.Debugf("mysqlQuery","Query: %s", _query)
 	db, err := sql.Open("mysql", "rclone:rclone@tcp(10.21.200.152:3306)/rclone")
 	if err != nil {
         panic(err.Error())
@@ -1254,8 +1292,42 @@ func (f *Fs) mysqlDirExists(path string) bool {
 	defer index.Close()
 	//index.Next()
 	//count, _ := index.Columns()
-	return index.Next()
+	state := index.Next()
+	return state
 
+}
+
+func (f *Fs) mysqlIsFile(path string) bool {
+	if path == "" {
+		return false
+	}
+	// root 
+	if path == "" {
+		return true
+	}
+	index, _ := f.mysqlQuery("select * from meta where type=2 and id=?",f.makeSha1FromString(path))
+	defer index.Close()
+	//index.Next()
+	//count, _ := index.Columns()
+	state := index.Next()
+	return state
+}
+
+func (f *Fs) mysqlIsFileByID(id string) bool {
+	index, _ := f.mysqlQuery("select * from meta where type=2 and id=?",id)
+	defer index.Close()
+	//index.Next()
+	//count, _ := index.Columns()
+	state := index.Next()
+	fs.Debugf("mysqlIsFileByID","%s",state)
+	return state
+}
+
+func (f *Fs) mysqlUpdateTime(id string, mod int64) (err error) {
+	index, err := f.mysqlQuery("update meta set modtime=? where id=?",mod,id)
+	defer index.Close()
+	return err
+	
 }
 
 func (f *Fs) mysqlQueryCount(_query string, args interface{}) (res int, err error) {
@@ -1329,7 +1401,9 @@ func (f *Fs) Mkdir(ctx context.Context, dir string) error {
 //
 // Return an error if it doesn't exist or isn't empty
 func (f *Fs) Rmdir(ctx context.Context, dir string) error {
-	return f.base.Rmdir(ctx, dir)
+	fs.Debugf("RmDir","run")
+	//return f.base.Rmdir(ctx, dir)
+	return nil
 }
 
 // Purge all files in the directory
@@ -1345,11 +1419,12 @@ func (f *Fs) Rmdir(ctx context.Context, dir string) error {
 //
 func (f *Fs) Purge(ctx context.Context, dir string) error {
 	fs.Debugf("Purge","start")
-	do := f.base.Features().Purge
+	/* do := f.base.Features().Purge
 	if do == nil {
 		return fs.ErrorCantPurge
 	}
-	return do(ctx, dir)
+	return do(ctx, dir) */
+	return fs.ErrorCantPurge
 }
 
 // Remove an object (chunks and metadata, if any)
@@ -1387,8 +1462,30 @@ func (f *Fs) Purge(ctx context.Context, dir string) error {
 // the `delete hidden` flag above or at least the user has been warned.
 //
 func (o *Object) Remove(ctx context.Context) (err error) {
-	fs.Debugf("Remove","run")
+	fs.Debugf("Remove","run id: %s",o.mysqlID)
+	o.f.mysqlDeleteFile(o.mysqlID)
+	
 	return nil
+}
+
+func (f *Fs) mysqlDeleteFile(id string) (err error) {
+	//TODO: error check
+	//INSERT INTO table2 select * from table1 where ts < date_sub(@N,INTERVAL 32 DAY);
+	//DELETE FROM table1 WHERE ts < date_sub(@N,INTERVAL 32 DAY);
+	//_r, err :=f.mysqlQuery("insert into trash (id,parent,type,name,modtime,md5,sha1,size,chunks,cname) select * from meta where id=?", id)
+	//defer _r.Close()
+
+	o, _ := f.mysqlGetFile(id)
+
+	_r, err :=f.mysqlQuery("delete from meta where id=?", id)
+	defer _r.Close()
+
+	o.mysqlID = fmt.Sprint(time.Now().UnixNano())
+
+	_r, err =f.mysqlQuery("insert into trash (id,type,name,modtime,md5,sha1,size,chunks,cname,trashtime) values(?,?,?,?,?,?,?,?,?,?)",o.mysqlID,2,o.remote,o.modTime.UnixNano(),o.md5,o.sha1,o.size,o.chunksC,o.cName,o.mysqlID)
+	defer _r.Close()
+	return nil
+
 }
 
 // copyOrMove implements copy or move
@@ -1650,14 +1747,19 @@ func (o *Object) Storable() bool {
 
 // ModTime returns the modification time of the file
 func (o *Object) ModTime(ctx context.Context) time.Time {
-	fs.Debugf("modtime","run")
+	fs.Debugf("modtime","run %s",o.modTime)
 	//return o.mainChunk().ModTime(ctx)
+
 	return o.modTime
 }
 
 // SetModTime sets the modification time of the file
 func (o *Object) SetModTime(ctx context.Context, mtime time.Time) error {
-	fs.Debugf("setmodtime","run")
+	fs.Debugf("setmodtime","run: new: %s obj: %s", mtime,o.modTime)
+	o.f.mysqlUpdateTime(o.mysqlID,mtime.UnixNano())
+	o.modTime = mtime
+	
+	fs.Debugf("setmodtime","changed: new: %s obj: %s", mtime,o.modTime)
 	return nil
 	//return o.mainChunk().SetModTime(ctx, mtime)
 }

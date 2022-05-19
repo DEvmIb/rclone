@@ -2161,9 +2161,6 @@ func (o *Object) UnWrap() fs.Object {
 
 // Open opens the file for read.  Call Close() on the returned io.ReadCloser
 func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (rc io.ReadCloser, err error) {
-	fs.Debugf("Open","%s %s",o.chunks[0].Remote(),len(o.chunks))
-	fs.Debugf("Open","%s",o.chunks[0].Size())
-	
 	if err := o.readMetadata(ctx); err != nil {
 		// refuse to open unsupported format
 		return nil, fmt.Errorf("can't open: %w", err)
@@ -2231,7 +2228,6 @@ func (o *Object) newLinearReader(ctx context.Context, offset, limit int64, optio
 }
 
 func (r *linearReader) nextChunk(offset int64) (int64, error) {
-	fs.Debugf("nextc","%s",offset)
 	if r.err != nil {
 		return -1, r.err
 	}
@@ -2267,7 +2263,6 @@ func (r *linearReader) nextChunk(offset int64) (int64, error) {
 }
 
 func (r *linearReader) Read(p []byte) (n int, err error) {
-	fs.Debugf("read","%s",r.pos)
 	if r.err != nil {
 		return 0, r.err
 	}

@@ -2207,7 +2207,6 @@ type linearReader struct {
 }
 
 func (o *Object) newLinearReader(ctx context.Context, offset, limit int64, options []fs.OpenOption) (io.ReadCloser, error) {
-	fs.Debugf("newlinearreader","%s off: %s",o.remote,offset)
 	r := &linearReader{
 		ctx:     ctx,
 		chunks:  o.chunks,

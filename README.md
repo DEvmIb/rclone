@@ -50,14 +50,13 @@
 ## Trash background deleting 
 
 ```2022/05/19 21:21:10 DEBUG : trashRunnerDelete: start
-2022/05/19 21:21:10 DEBUG : mysqlQuery: Query: select * from trash where trashtime < ? a: [%!s(int64=1652988069001029748)]
 2022/05/19 21:21:10 DEBUG : trashRunnerDelete: 10mb.img
 2022/05/19 21:21:10 INFO  : trashRunnerDelete: 10mb.img deleting chunk: 1/1652980240211359995.0
 2022/05/19 21:21:10 INFO  : trashRunnerDelete: 10mb.img deleting chunk: 3/1652980240211359995.1
-2022/05/19 21:21:10 DEBUG : mysqlQuery: Query: delete from trash where id=? a: [%!s(int64=1652980386312958049)]
 2022/05/19 21:21:10 INFO  : trashRunnerDelete: Removed 10mb.img from Trash. Freed: 10Mi
 2022/05/19 21:21:20 DEBUG : trashRunnerDelete: start
-2022/05/19 21:21:20 DEBUG : mysqlQuery: Query: select * from trash where trashtime < ? a: [%!s(int64=1652988079001069760)]
-2022/05/19 21:21:30 DEBUG : trashRunnerDelete: start
-2022/05/19 21:21:30 DEBUG : mysqlQuery: Query: select * from trash where trashtime < ? a: [%!s(int64=1652988089000914653)]
+```
+
+## Trash background Stats line
+```2022/05/19 22:06:00 INFO  : trashRunner: (8) Trashed Files. (1.416Gi) Total Size.
 ```

@@ -14,6 +14,7 @@
 //TODO: honor max chunk size
 //TODO: copy file to mount. will it instant added to mysql or on write-back-delay? .. on write-back..nice
 //TODO: optimize mysql querys
+//TODO: add failed uploads to trash or delete direct
 
 // copy or move is for file
 
@@ -375,7 +376,7 @@ func NewFs(ctx context.Context, name, rpath string, m configmap.Mapper) (fs.Fs, 
 	//trashRunner start
 	c := cron.New()
 	c.AddFunc("*/60 * * * * *", func() { trashRunnerStats(f) })
-	c.AddFunc("*/10 * * * * *", func() { trashRunnerDelete(f, ctx) })
+	c.AddFunc("* 60 * * * *", func() { trashRunnerDelete(f, ctx) })
 	c.Start()
 
 	return f, err
@@ -490,8 +491,9 @@ func trashRunnerStats(f *Fs) {
 	var trashInfoLine string
 
 	trashCount := f.mysqlGetTrashCount()
+	trashSize := f.mysqlGetTrashSize()
 
-	trashInfoLine = fmt.Sprintf("(%s) Trashed Files",trashCount)
+	trashInfoLine = fmt.Sprintf("(%s) Trashed Files. (%s) Total Size.",trashCount,trashSize)
 
 
 	fs.Infof("trashRunner","%s",trashInfoLine)
@@ -533,11 +535,6 @@ func trashRunnerDelete(f *Fs, ctx context.Context) {
 
 			fs.Debugf("trashRunnerDelete","%s",_record.name)
 
-			/* oldFsObject, err := f.NewObject(ctx, "muh.6")
-			if err == nil {
-				oldObject := oldFsObject.(*Object)
-				err = oldObject.Remove(ctx)
-			} */
 			for i := 0; i < _record.chunks; i++ {
 				_cname := f.makeSha1FromString(_record.cname + fmt.Sprint(i))[0:1]+"/"+_record.cname+"."+fmt.Sprint(i)
 				fs.Infof("trashRunnerDelete","%s deleting chunk: %s",_record.name,_cname)
@@ -551,8 +548,9 @@ func trashRunnerDelete(f *Fs, ctx context.Context) {
 					}
 				}
 			}
-			_res, err := f.mysqlQuery("delete from trash where id=?",_record.id)
-			defer _res.Close()
+
+			_del, err := f.mysqlQuery("delete from trash where id=?",_record.id)
+			defer _del.Close()
 			if err != nil {
 				fs.Infof("trashRunnerDelete","error deleting:",_record.name)
 			} else {
@@ -819,6 +817,19 @@ func (f *Fs) mysqlGetTrashCount() string {
 		return _count
 	} else {
 		return "0"
+	}
+}
+
+func (f *Fs) mysqlGetTrashSize() string {
+	_res, err := f.mysqlQuery("select sum(size) from trash")
+	defer _res.Close()
+	if err == nil {
+		_res.Next()
+		var _count int64
+		_res.Scan(&_count)
+		return operations.SizeString(_count,true)
+	} else {
+		return "0B"
 	}
 }
 

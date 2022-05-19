@@ -7,7 +7,7 @@
 * files deleted will only removed from metadata and moved to trash
 * virtual .trash folder
 
-#### remote folder structur
+## remote folder structur
 
 * example show's 4 copys of the same file 10mb.img
 
@@ -45,4 +45,19 @@
 -rw-r--r--  1 root root 4235511 1973-02-04 15:12:19.000000000 +0100 /tmp/c2/chunks/b/1652861837516626301.0
 -rw-r--r--  1 root root 3052363 1983-06-09 02:52:01.000000000 +0200 /tmp/c2/chunks/c/1652861837516626301.2
 -rw-r--r--  1 root root 3806190 1970-08-13 22:43:27.000000000 +0100 /tmp/c2/chunks/f/1652861840904249693.1
+```
+
+## Trash background deleting 
+
+```2022/05/19 21:21:10 DEBUG : trashRunnerDelete: start
+2022/05/19 21:21:10 DEBUG : mysqlQuery: Query: select * from trash where trashtime < ? a: [%!s(int64=1652988069001029748)]
+2022/05/19 21:21:10 DEBUG : trashRunnerDelete: 10mb.img
+2022/05/19 21:21:10 INFO  : trashRunnerDelete: 10mb.img deleting chunk: 1/1652980240211359995.0
+2022/05/19 21:21:10 INFO  : trashRunnerDelete: 10mb.img deleting chunk: 3/1652980240211359995.1
+2022/05/19 21:21:10 DEBUG : mysqlQuery: Query: delete from trash where id=? a: [%!s(int64=1652980386312958049)]
+2022/05/19 21:21:10 INFO  : trashRunnerDelete: Removed 10mb.img from Trash. Freed: 10Mi
+2022/05/19 21:21:20 DEBUG : trashRunnerDelete: start
+2022/05/19 21:21:20 DEBUG : mysqlQuery: Query: select * from trash where trashtime < ? a: [%!s(int64=1652988079001069760)]
+2022/05/19 21:21:30 DEBUG : trashRunnerDelete: start
+2022/05/19 21:21:30 DEBUG : mysqlQuery: Query: select * from trash where trashtime < ? a: [%!s(int64=1652988089000914653)]
 ```

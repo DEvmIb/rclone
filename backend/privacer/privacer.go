@@ -1,5 +1,7 @@
 // Package privacer provides wrappers for Fs and Object which split large files in chunks
 //TODO: delayed deletion. on file or dir remove only metadata delete. remove files later by command. bonbon .trash folder
+//			-- move to trash -- done
+//			-- manage trash
 //TODO: folders and files additional random id needed for delayed delete. -- done
 //TODO: SetModTime -- done
 //TODO: move -- done
@@ -11,10 +13,9 @@
 //TODO: defer external sql function how to
 //TODO: honor max chunk size
 //TODO: copy file to mount. will it instant added to mysql or on write-back-delay? .. on write-back..nice
-
+//TODO: optimize mysql querys
 
 // copy or move is for file
-
 
 package privacer
 
@@ -32,8 +33,9 @@ import (
 	"path"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
+
+	"github.com/robfig/cron"
 
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/accounting"
@@ -290,7 +292,7 @@ This method is EXPERIMENTAL, don't use on production systems.`,
 
 // NewFs constructs an Fs from the path, container:path
 func NewFs(ctx context.Context, name, rpath string, m configmap.Mapper) (fs.Fs, error) {
-	fs.Debugf("newfs","%s",rpath)
+	fs.Debugf("newfs", "%s", rpath)
 	// chunks always chunk folder
 	orpath := rpath
 	//rpath = ""
@@ -317,9 +319,9 @@ func NewFs(ctx context.Context, name, rpath string, m configmap.Mapper) (fs.Fs, 
 	remotePath := fspath.JoinRootPath(basePath, rpath)
 	//baseFs, err := cache.Get(ctx, baseName+remotePath)
 	rpath = basePath
-	remotePath =rpath
+	remotePath = rpath
 	baseFs, err := cache.Get(ctx, baseName+remotePath)
-	fs.Debugf("newfsstart","1: %s 2: %s 3: %s",remotePath,baseFs,basePath)
+	fs.Debugf("newfsstart", "1: %s 2: %s 3: %s", remotePath, baseFs, basePath)
 	if err != fs.ErrorIsFile && err != nil {
 		return nil, fmt.Errorf("failed to make remote %q to wrap: %w", baseName+remotePath, err)
 	}
@@ -328,11 +330,11 @@ func NewFs(ctx context.Context, name, rpath string, m configmap.Mapper) (fs.Fs, 
 	}
 
 	f := &Fs{
-		base: baseFs,
-		name: name,
-		root: rpath,
+		base:  baseFs,
+		name:  name,
+		root:  rpath,
 		oroot: orpath,
-		opt:  *opt,
+		opt:   *opt,
 	}
 	cache.PinUntilFinalized(f.base, f)
 	f.dirSort = true // processEntries requires that meta Objects prerun data chunks atm.
@@ -370,20 +372,26 @@ func NewFs(ctx context.Context, name, rpath string, m configmap.Mapper) (fs.Fs, 
 
 	f.features.Disable("ListR") // Recursive listing may cause chunker skip files
 
+	//trashRunner start
+	c := cron.New()
+	c.AddFunc("*/60 * * * * *", func() { trashRunnerStats(f) })
+	c.AddFunc("*/10 * * * * *", func() { trashRunnerDelete(f, ctx) })
+	c.Start()
+
 	return f, err
 }
 
 type mysqlEntry struct {
-	ID   string    `json:"id"`
-	Parent string `json:"parent"`
-	Type int `json:"type"`
-	Name string `json:"name"`
-	ModTime int64 `json:"modtime"`
-	md5 string `json:"md5"`
-	sha1 string `json:"sha1"`
-	size int64 `json:"size"`
-	chunks int `json:"chunks"`
-	cName string `json:"cname"`
+	ID      string `json:"id"`
+	Parent  string `json:"parent"`
+	Type    int    `json:"type"`
+	Name    string `json:"name"`
+	ModTime int64  `json:"modtime"`
+	Md5     string `json:"md5"`
+	Sha1    string `json:"sha1"`
+	Size    int64  `json:"size"`
+	Chunks  int    `json:"chunks"`
+	CName   string `json:"cname"`
 }
 
 // Options defines the configuration for this backend
@@ -402,7 +410,7 @@ type Options struct {
 type Fs struct {
 	name         string
 	root         string
-	oroot		 string
+	oroot        string
 	base         fs.Fs          // remote wrapped by chunker overlay
 	wrapper      fs.Fs          // wrapper is used by SetWrapper
 	useMeta      bool           // false if metadata format is 'none'
@@ -413,46 +421,25 @@ type Fs struct {
 	dataNameFmt  string         // name format of data chunks
 	ctrlNameFmt  string         // name format of control chunks
 	nameRegexp   *regexp.Regexp // regular expression to match chunk names
-	xactIDRand   *rand.Rand     // generator of random transaction identifiers
-	xactIDMutex  sync.Mutex     // mutex for the source of randomness
-	opt          Options        // copy of Options
-	features     *fs.Features   // optional features
-	dirSort      bool           // reserved for future, ignored
-	useNoRename  bool           // can be set with the transactions option
+
+	opt         Options      // copy of Options
+	features    *fs.Features // optional features
+	dirSort     bool         // reserved for future, ignored
+	useNoRename bool         // can be set with the transactions option
+}
+
+func (f *Fs) getRandomId() int64 {
+	return time.Now().UnixNano()
 }
 
 // configure sets up chunker for given name format, meta format and hash type.
 // It also seeds the source of random transaction identifiers.
 // configure must be called only from NewFs or by unit tests.
 func (f *Fs) configure(nameFormat, metaFormat, hashType, transactionMode string) error {
-	if err := f.setChunkNameFormat(nameFormat); err != nil {
-		return fmt.Errorf("invalid name format '%s': %w", nameFormat, err)
-	}
-	if err := f.setMetaFormat(metaFormat); err != nil {
-		return err
-	}
 	if err := f.setHashType(hashType); err != nil {
 		return err
 	}
-	if err := f.setTransactionMode(transactionMode); err != nil {
-		return err
-	}
 
-	randomSeed := time.Now().UnixNano()
-	f.xactIDRand = rand.New(rand.NewSource(randomSeed))
-
-	return nil
-}
-
-func (f *Fs) setMetaFormat(metaFormat string) error {
-	switch metaFormat {
-	case "none":
-		f.useMeta = false
-	case "simplejson":
-		f.useMeta = true
-	default:
-		return fmt.Errorf("unsupported meta format '%s'", metaFormat)
-	}
 	return nil
 }
 
@@ -462,6 +449,8 @@ func (f *Fs) setMetaFormat(metaFormat string) error {
 // In the "All" mode chunker will force metadata on all files
 // if the wrapped remote can't provide given hashsum.
 func (f *Fs) setHashType(hashType string) error {
+	fs.Debugf("setHashType", "start")
+
 	f.useMD5 = false
 	f.useSHA1 = false
 	f.hashFallback = false
@@ -491,30 +480,88 @@ func (f *Fs) setHashType(hashType string) error {
 		return fmt.Errorf("unsupported hash type '%s'", hashType)
 	}
 	if requireMetaHash && !f.useMeta {
-		return fmt.Errorf("hash type '%s' requires compatible meta format", hashType)
+		//return fmt.Errorf("hash type '%s' requires compatible meta format", hashType)
 	}
 	return nil
 }
 
-func (f *Fs) setTransactionMode(transactionMode string) error {
-	switch transactionMode {
-	case "rename":
-		f.useNoRename = false
-	case "norename":
-		if !f.useMeta {
-			return errors.New("incompatible transaction options")
-		}
-		f.useNoRename = true
-	case "auto":
-		f.useNoRename = !f.CanQuickRename()
-		if f.useNoRename && !f.useMeta {
-			f.useNoRename = false
-			return errors.New("using norename transactions requires metadata")
-		}
-	default:
-		return fmt.Errorf("unsupported transaction mode '%s'", transactionMode)
+func trashRunnerStats(f *Fs) {
+	fs.Debugf("trashRunner", "start")
+	var trashInfoLine string
+
+	trashCount := f.mysqlGetTrashCount()
+
+	trashInfoLine = fmt.Sprintf("(%s) Trashed Files",trashCount)
+
+
+	fs.Infof("trashRunner","%s",trashInfoLine)
+	
+}
+
+func trashRunnerDelete(f *Fs, ctx context.Context) {
+	fs.Debugf("trashRunnerDelete", "start")
+	var _1s int64
+	_1s = 1000000000
+	_trashTime := time.Now().UnixNano() - (_1s * 1)
+
+	_res,err := f.mysqlQuery("select * from trash where trashtime < ?",_trashTime)
+	defer _res.Close()
+	if err != nil {
+		fs.Debugf("trashRunnerDelete","err %s",err)
+		return
 	}
-	return nil
+	for _res.Next() {
+		type _data struct {
+			id int64
+			Type int
+			name string
+			modtime int64
+			md5 string
+			sha1 string
+			size int64
+			chunks int
+			cname string
+			trashtime int64
+		}
+
+		var _record _data
+		err := _res.Scan(&_record.id,&_record.Type,&_record.name,&_record.modtime,&_record.md5,&_record.sha1,&_record.size,&_record.chunks,&_record.cname,&_record.trashtime)
+		if err != nil {
+			fs.Debugf("trashRunnerDelete","err: %s",err)
+			return
+		}
+
+			fs.Debugf("trashRunnerDelete","%s",_record.name)
+
+			/* oldFsObject, err := f.NewObject(ctx, "muh.6")
+			if err == nil {
+				oldObject := oldFsObject.(*Object)
+				err = oldObject.Remove(ctx)
+			} */
+			for i := 0; i < _record.chunks; i++ {
+				_cname := f.makeSha1FromString(_record.cname + fmt.Sprint(i))[0:1]+"/"+_record.cname+"."+fmt.Sprint(i)
+				fs.Infof("trashRunnerDelete","%s deleting chunk: %s",_record.name,_cname)
+				_chunk , err := f.base.NewObject(ctx, _cname)
+				if err != nil {
+					fs.Infof("trashRunnerDelete","cant find chunk %s err: %s",_cname, err)
+				} else {
+					err := _chunk.Remove(ctx)
+					if err !=nil {
+						fs.Infof("trashRunnerDelete","cant delete chunk %s err: %s",_cname, err)
+					}
+				}
+			}
+			_res, err := f.mysqlQuery("delete from trash where id=?",_record.id)
+			defer _res.Close()
+			if err != nil {
+				fs.Infof("trashRunnerDelete","error deleting:",_record.name)
+			} else {
+				fs.Infof("trashRunnerDelete","Removed %s from Trash. Freed: %s",_record.name,operations.SizeString(_record.size,true))
+			}
+
+	}
+
+	
 }
 
 // setChunkNameFormat converts pattern based chunk name format
@@ -610,16 +657,11 @@ func (f *Fs) makeChunkName(filePath string, chunkNo int, ctrlType, xactID string
 			panic("makeChunkName: invalid argument")
 		}
 	}
-	
+
 	name = f.makeSha1FromString(dir + name)
-	fs.Debugf("makeChunkName","%s",".cache/" + name + tempSuffix)
+	fs.Debugf("makeChunkName", "%s", ".cache/"+name+tempSuffix)
 	return ".cache/" + name + tempSuffix
 }
-
-
-
-
-
 
 // List the objects and directories in dir into entries.
 // The entries can be returned in any order but should be
@@ -645,7 +687,7 @@ func (f *Fs) makeChunkName(filePath string, chunkNo int, ctrlType, xactID string
 
 func (f *Fs) addSlash(path string) string {
 	if path != "" {
-		if !strings.HasSuffix(path,"/") {
+		if !strings.HasSuffix(path, "/") {
 			path += "/"
 		}
 	}
@@ -654,7 +696,7 @@ func (f *Fs) addSlash(path string) string {
 
 func (f *Fs) prefixSlash(path string) string {
 	if path != "" {
-		if !strings.HasPrefix(path,"/") {
+		if !strings.HasPrefix(path, "/") {
 			path = "/" + path
 		}
 	}
@@ -664,30 +706,30 @@ func (f *Fs) prefixSlash(path string) string {
 func (f *Fs) mysqlGetFileByPath(_path string) (obj *Object, error error) {
 	_di, fi := path.Split(_path)
 	_id := f.mysqlFindMyDirId(_di)
-	_id = f.mysqlFindFileId(fi,_id)
+	_id = f.mysqlFindFileId(fi, _id)
 	o, err := f.mysqlGetFile(_id)
 	return o, err
 }
 
 func (f *Fs) mysqlGetFile(id string) (obj *Object, error error) {
-	index, _ := f.mysqlQuery("select * from meta where type=2 and id=?",id)
+	index, _ := f.mysqlQuery("select * from meta where type=2 and id=?", id)
 	defer index.Close()
 	index.Next()
 	var entry mysqlEntry
-	err := index.Scan(&entry.ID, &entry.Parent, &entry.Type, &entry.Name, &entry.ModTime, &entry.md5, &entry.sha1, &entry.size, &entry.chunks, &entry.cName)
+	err := index.Scan(&entry.ID, &entry.Parent, &entry.Type, &entry.Name, &entry.ModTime, &entry.Md5, &entry.Sha1, &entry.Size, &entry.Chunks, &entry.CName)
 	if err == nil {
 		o := &Object{
-			f:     f,
-			remote: entry.Name,
-			modTime: time.Unix(0,entry.ModTime),
-			size: entry.size,
-			main: nil,
-			chunksC: entry.chunks,
-			chunks: nil,
-			md5: entry.md5,
-			sha1: entry.sha1,
+			f:       f,
+			remote:  entry.Name,
+			modTime: time.Unix(0, entry.ModTime),
+			size:    entry.Size,
+			main:    nil,
+			chunksC: entry.Chunks,
+			chunks:  nil,
+			md5:     entry.Md5,
+			sha1:    entry.Sha1,
 			mysqlID: entry.ID,
-			cName: entry.cName,
+			cName:   entry.CName,
 		}
 		return o, nil
 	} else {
@@ -695,9 +737,9 @@ func (f *Fs) mysqlGetFile(id string) (obj *Object, error error) {
 	}
 }
 
-func (f *Fs) mysqlFindDirId(dirName string,startId string) (id string) {
-	fs.Debugf("mysqlFindDirId","%s %s",dirName,startId)
-	index, _ := f.mysqlQuery("select id,name from meta where type=1 and parent=?",startId)
+func (f *Fs) mysqlFindDirId(dirName string, startId string) (id string) {
+	fs.Debugf("mysqlFindDirId", "%s %s", dirName, startId)
+	index, _ := f.mysqlQuery("select id,name from meta where type=1 and parent=?", startId)
 	defer index.Close()
 	for index.Next() {
 		_id := ""
@@ -710,9 +752,9 @@ func (f *Fs) mysqlFindDirId(dirName string,startId string) (id string) {
 	return ""
 }
 
-func (f *Fs) mysqlFindFileId(fiName string,startId string) (id string) {
-	fs.Debugf("mysqlFindFileId","%s %s",fiName,startId)
-	index, _ := f.mysqlQuery("select id,name from meta where type=2 and parent=?",startId)
+func (f *Fs) mysqlFindFileId(fiName string, startId string) (id string) {
+	fs.Debugf("mysqlFindFileId", "%s %s", fiName, startId)
+	index, _ := f.mysqlQuery("select id,name from meta where type=2 and parent=?", startId)
 	defer index.Close()
 	for index.Next() {
 		_id := ""
@@ -729,15 +771,15 @@ func (f *Fs) mysqlFindMyDirId(dir string) (id string) {
 	id = "0"
 	dir = f.prefixSlash(f.cleanFolderSlashes(dir))
 	if dir != "" {
-		lo := strings.Split(dir,"/")
+		lo := strings.Split(dir, "/")
 		for i := 1; i < len(lo); i++ {
-			fs.Debugf("mysqlFindMyId","find: %s",lo[i])
+			fs.Debugf("mysqlFindMyId", "find: %s", lo[i])
 			//if i == 0 {
-				id = f.mysqlFindDirId(lo[i],id)
+			id = f.mysqlFindDirId(lo[i], id)
 			//} else {
 
 			//}
-		} 
+		}
 	}
 	return
 }
@@ -745,7 +787,7 @@ func (f *Fs) mysqlFindMyDirId(dir string) (id string) {
 func (f *Fs) mysqlFindMyFileId(_path string) (id string) {
 	di, fi := path.Split(_path)
 	diId := f.mysqlFindMyDirId(di)
-	fiId := f.mysqlFindFileId(fi,diId)
+	fiId := f.mysqlFindFileId(fi, diId)
 	return fiId
 }
 
@@ -754,87 +796,97 @@ func (f *Fs) mysqlFindMyDirParentId(dir string) (id string) {
 	id = "0"
 	dir = f.prefixSlash(f.cleanFolderSlashes(di))
 	if dir != "" {
-		lo := strings.Split(dir,"/")
+		lo := strings.Split(dir, "/")
 		for i := 1; i < len(lo); i++ {
-			fs.Debugf("mysqlFindMyId","find: %s",lo[i])
+			fs.Debugf("mysqlFindMyId", "find: %s", lo[i])
 			//if i == 0 {
-				id = f.mysqlFindDirId(lo[i],id)
+			id = f.mysqlFindDirId(lo[i], id)
 			//} else {
 
 			//}
-		} 
+		}
 	}
 	return
+}
+
+func (f *Fs) mysqlGetTrashCount() string {
+	_res, err := f.mysqlQuery("select count(*) from trash")
+	defer _res.Close()
+	if err == nil {
+		_res.Next()
+		var _count string
+		_res.Scan(&_count)
+		return _count
+	} else {
+		return "0"
+	}
 }
 
 func (f *Fs) mysqlBuildList(dir string, nroot string) (entries fs.DirEntries, err error) {
 	entries = nil
 	if f.mysqlIsFile(nroot) {
-		fs.Debugf("mysqlBuildList","nroot is file")
+		fs.Debugf("mysqlBuildList", "nroot is file")
 		di, _ := path.Split(nroot)
 		nroot = di
 	}
-	fs.Debugf("mysqlBuildList","start search at: %s",nroot)
+	fs.Debugf("mysqlBuildList", "start search at: %s", nroot)
 	//finding
 	// start = da39a3ee5e6b4b0d3255bfef95601890afd80709
 	_id := "0"
 
 	if nroot != "" {
-		lo := strings.Split(nroot,"/")
-		
+		lo := strings.Split(nroot, "/")
+
 		for i := 1; i < len(lo); i++ {
-			fs.Debugf("mysqlBuildList","find: %s",lo[i])
+			fs.Debugf("mysqlBuildList", "find: %s", lo[i])
 			//if i == 0 {
-				_id = f.mysqlFindDirId(lo[i],_id)
+			_id = f.mysqlFindDirId(lo[i], _id)
 			//} else {
 
 			//}
-		} 
+		}
 	}
 
-	fs.Debugf("mysqlBuildList","found my id: %s",_id)
-	index, _ := f.mysqlQuery("select * from meta where parent=?",_id)
+	fs.Debugf("mysqlBuildList", "found my id: %s", _id)
+	index, _ := f.mysqlQuery("select * from meta where parent=?", _id)
 	defer index.Close()
 	if err != nil {
 		panic(err)
 	}
 
-	
-
-
 	for index.Next() {
 		var entry mysqlEntry
-		err = index.Scan(&entry.ID, &entry.Parent, &entry.Type, &entry.Name, &entry.ModTime, &entry.md5, &entry.sha1, &entry.size, &entry.chunks, &entry.cName)
+		err = index.Scan(&entry.ID, &entry.Parent, &entry.Type, &entry.Name, &entry.ModTime, &entry.Md5, &entry.Sha1, &entry.Size, &entry.Chunks, &entry.CName)
 		if err != nil {
 			panic(err.Error())
 		}
-		fs.Debugf("id","%s",entry.ID)
+		fs.Debugf("id", "%s", entry.ID)
 		/* if entry.ID == "" {
 			return nil, errors.New("dir not found")
 		} */
-		fs.Debugf("List","type: %s name: %s parrent: %s",entry.Type,entry.Name,entry.Parent)
+		fs.Debugf("List", "type: %s name: %s parrent: %s", entry.Type, entry.Name, entry.Parent)
 		// dir
 		if entry.Type == 1 && entry.Name != "" {
-			nentry := fs.NewDir( f.addSlash(dir) + entry.Name, time.Unix(0,entry.ModTime))
+			nentry := fs.NewDir(f.addSlash(dir)+entry.Name, time.Unix(0, entry.ModTime))
 			nentry.SetID(entry.ID)
 			entries = append(entries, nentry)
 		}
 		// file
 		if entry.Type == 2 && entry.Name != "" {
-			
+
 			o := &Object{
-				f:     f,
-				remote: f.addSlash(dir)+entry.Name,
-				modTime: time.Unix(0,entry.ModTime),
-				size: entry.size,
-				main: nil,
-				chunksC: entry.chunks,
-				chunks: nil,
-				md5: entry.md5,
-				sha1: entry.sha1,
+				f:       f,
+				remote:  f.addSlash(dir) + entry.Name,
+				modTime: time.Unix(0, entry.ModTime),
+				size:    entry.Size,
+				main:    nil,
+				chunksC: entry.Chunks,
+				chunks:  nil,
+				md5:     entry.Md5,
+				sha1:    entry.Sha1,
 				mysqlID: entry.ID,
-				cName: entry.cName,
-			} 
+				cName:   entry.CName,
+			}
 
 			//o.chunks = append(o.chunks, b1,b2,b3,b4)
 			//nentry := fs.Object( f.addSlash(dir) + entry.Name, time.Unix(0,entry.ModTime))
@@ -847,7 +899,7 @@ func (f *Fs) mysqlBuildList(dir string, nroot string) (entries fs.DirEntries, er
 }
 
 func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err error) {
-	fs.Debugf("List","go: %s",dir)
+	fs.Debugf("List", "go: %s", dir)
 	//entries, err = f.base.List(ctx, dir)
 	//if err != nil {
 	//	return nil, err
@@ -855,7 +907,6 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 	//return f.processEntries(ctx, entries, dir)
 	// 10.21.200.152
 
-	
 	entries = nil
 
 	if dir != "" {
@@ -870,8 +921,8 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 	root := path.Join(f.oroot, dir)
 	//root := f.root
 	nroot := root
-	if root != "" && !strings.HasPrefix(root,"/") {
-		nroot="/"+root
+	if root != "" && !strings.HasPrefix(root, "/") {
+		nroot = "/" + root
 	}
 	if nroot == "/" {
 		nroot = ""
@@ -883,11 +934,11 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 		root = ""
 	} */
 	//_, dname := path.Split(root)
-	fs.Debugf("List","dir: %s root: %s nroot: %s sum: %s",dir,f.oroot,nroot,f.makeSha1FromString(nroot))
-	
+	fs.Debugf("List", "dir: %s root: %s nroot: %s sum: %s", dir, f.oroot, nroot, f.makeSha1FromString(nroot))
+
 	isdir := f.mysqlDirExists(nroot)
 	isfile := f.mysqlIsFile(nroot)
-	fs.Debugf("list","isD: %s isF: %s",isdir,isfile)
+	fs.Debugf("list", "isD: %s isF: %s", isdir, isfile)
 	/* if !isdir && !isfile {
 		return nil, nil
 	} */
@@ -899,13 +950,10 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 		return
 	} */
 
-
-	
 	//fs.Debugf("d","%s",index)
 	//TODO: err check
 	entries, _ = f.mysqlBuildList(dir, nroot)
-    
-	
+
 	// file
 	//entry, err := f.NewObject(ctx,"123")
 	//entry1 := fs.NewDir("123",time.Now())
@@ -932,11 +980,9 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 // Don't implement this unless you have a more efficient way
 // of listing recursively than doing a directory traversal.
 func (f *Fs) ListR(ctx context.Context, dir string, callback fs.ListRCallback) (err error) {
-	fs.Debugf("ListR","go")
+	fs.Debugf("ListR", "go")
 	return nil
 }
-
-
 
 // NewObject finds the Object at remote.
 //
@@ -949,14 +995,14 @@ func (f *Fs) ListR(ctx context.Context, dir string, callback fs.ListRCallback) (
 // but opening even a small file can be slow on some backends.
 //
 func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
-	fs.Debugf("NewObject","run remote: %s",remote)
+	fs.Debugf("NewObject", "run remote: %s", remote)
 	ex := f.mysqlIsFile(remote)
 	if ex {
-		fs.Debugf("NewObject"," Found: %s",remote)
+		fs.Debugf("NewObject", " Found: %s", remote)
 		_o, err := f.mysqlGetFileByPath(remote)
 		return _o, err
 	}
-	fs.Debugf("NewObject","not found: %s",remote)
+	fs.Debugf("NewObject", "not found: %s", remote)
 	return nil, fs.ErrorObjectNotFound
 }
 
@@ -964,156 +1010,141 @@ func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 // The quick mode avoids directory requests other than `List`,
 // ignores non-chunked objects and skips chunk size checks.
 func (f *Fs) scanObject(ctx context.Context, remote string, quickScan bool) (fs.Object, error) {
-	fs.Debugf("scanObject","run")
+	fs.Debugf("scanObject", "run")
 	return nil, nil
 }
-
-
-
-
 
 // put implements Put, PutStream, PutUnchecked, Update
 func (f *Fs) put(
 	ctx context.Context, in io.Reader, src fs.ObjectInfo, remote string, options []fs.OpenOption,
 	basePut putFn, action string, target fs.Object) (obj fs.Object, err error) {
-		fs.Debugf("put","srcro: %s srcre: %s remote: %s oroot: %s",src.Fs().Root(),src.Remote(),remote,f.oroot)
-		fs.Debugf("root","%s",f.oroot)
-		fs.Debugf("muh","%s %s",remote,f.oroot)
-		//fs.Debugf("put","file %s",f.re)
+	fs.Debugf("put", "srcro: %s srcre: %s remote: %s oroot: %s", src.Fs().Root(), src.Remote(), remote, f.oroot)
+	fs.Debugf("root", "%s", f.oroot)
+	fs.Debugf("muh", "%s %s", remote, f.oroot)
+	//fs.Debugf("put","file %s",f.re)
 
-		var metaObject fs.Object
+	var metaObject fs.Object
 
-		f.mysqlMkDirRe(f.oroot)
+	f.mysqlMkDirRe(f.oroot)
 
-		
-		
-		// whe use our own structure
-		//f.root=""
-		
-		c := f.newChunkingReader(src)
-		
-		
+	// whe use our own structure
+	//f.root=""
 
-		/* defer func() {
-			if err != nil {
-				c.rollback(ctx, metaObject)
-			}
-		}() */
-		
-		
-		// how to delete
-		/* oldFsObject, err := f.NewObject(ctx, "muh.6")
-		if err == nil {
-			oldObject := oldFsObject.(*Object)
-			err = oldObject.Remove(ctx)
-		} */
+	c := f.newChunkingReader(src)
 
-		wrapIn := c.wrapStream(ctx, in, src)
-		
-		//body return check must be
-		var min, max int64
-		if c.sizeTotal <= 1024 {
-			min = -1
-			max = -1
-		} else {
-			s := c.sizeTotal / 2 / 2
-			min = s
-			max = c.sizeTotal - min
-			//c.chunkSize = max
+	/* defer func() {
+		if err != nil {
+			c.rollback(ctx, metaObject)
 		}
-		
-		
+	}() */
 
-		cname := fmt.Sprint(time.Now().UnixNano())
-		fs.Debugf("cname sha1","%s",f.makeSha1FromString(cname))
+	// how to delete
+	/* oldFsObject, err := f.NewObject(ctx, "muh.6")
+	if err == nil {
+		oldObject := oldFsObject.(*Object)
+		err = oldObject.Remove(ctx)
+	} */
 
-		for c.chunkNo = 0; !c.done; c.chunkNo++ {
-			//chunk size
-			if min >0 && max >0 {
-				rand.Seed(time.Now().UnixNano())
-				c.chunkLimit = rand.Int63n(max - min) + min
-			}
-			size := c.sizeLeft
-			if size > c.chunkLimit {
-				size = c.chunkLimit
-			}
-			
-			info := f.wrapInfo(src, f.makeSha1FromString(cname+fmt.Sprint(c.chunkNo))[0:1] + "/" + cname + "." + fmt.Sprint(c.chunkNo), size)
-			
-			//FIXME: check for errors
-			_, err := basePut(ctx, wrapIn, info, options...)
-			if err != nil {
-				//return nil, err
-			}
+	wrapIn := c.wrapStream(ctx, in, src)
 
-			//c.updateHashes()
-			//fs.Debugf("chunk hash","%s %s",c.md5,c.sha1)
+	//body return check must be
+	var min, max int64
+	if c.sizeTotal <= 1024 {
+		min = -1
+		max = -1
+	} else {
+		s := c.sizeTotal / 2 / 2
+		min = s
+		max = c.sizeTotal - min
+		//c.chunkSize = max
+	}
 
-			if c.sizeLeft == 0 && !c.done {
-				// The file has been apparently put by hash, force completion.
-				c.done = true
-			}
+	cname := fmt.Sprint(f.getRandomId())
+	fs.Debugf("cname sha1", "%s", f.makeSha1FromString(cname))
 
-			
-
+	for c.chunkNo = 0; !c.done; c.chunkNo++ {
+		//chunk size
+		if min > 0 && max > 0 {
+			rand.Seed(f.getRandomId())
+			c.chunkLimit = rand.Int63n(max-min) + min
 		}
-		/* if f.useMD5 {
-			c.md5, _ = src.Hash(ctx,hash.MD5)
+		size := c.sizeLeft
+		if size > c.chunkLimit {
+			size = c.chunkLimit
 		}
-		if f.useSHA1 {
-			c.sha1, _ = src.Hash(ctx,hash.MD5)
-		} */
-		
-		//md5, _ := src.Hash(ctx,hash.MD5)
-		//sha1, _ := src.Hash(ctx,hash.SHA1)
-		fs.Debugf("done","d")
-		/* info := f.wrapInfo(src, "123", c.sizeTotal)
-		_, errChunk := basePut(ctx, wrapIn, info, options...)
-		if errChunk != nil {
-			return nil, errChunk
-		} */
-		c.updateHashes()
-		o := &Object{
-			remote: remote,
-			main:   metaObject,
-			size:   c.sizeTotal,
-			f:      f,
-			md5:	c.md5,
-			sha1: c.sha1,
-			chunksC: c.chunkNo,
-			//chunks: chunks,
-		}
-		//o := f.newObject("", metaObject, c.chunks)
-		
 
-		// mount put: srcro:  srcre: 1/2/3/6.txt remote: 1/2/3/6.txt oroot:
-		//			put new: di: 2/3/ fi: 123.txt
-		// copy put: srcro: /tmp srcre: 123.txt remote: 123.txt oroot: 2/3
-		// 			put new: di: 2/3/ fi: 123.txt
-		_dst := path.Join(f.oroot,remote)
-		di, fi := path.Split(_dst)
-		//di = f.cleanFolderSlashes(di)
-		fs.Debugf("put new","di: %s fi: %s",di,fi)
-		nid := fmt.Sprint(time.Now().UnixNano()) //f.makeSha1FromString(f.prefixSlash(di+fi))
-		pid := f.mysqlFindMyDirId(di) //f.prefixSlash(f.cleanFolderSlashes(di))
+		info := f.wrapInfo(src, f.makeSha1FromString(cname + fmt.Sprint(c.chunkNo))[0:1]+"/"+cname+"."+fmt.Sprint(c.chunkNo), size)
 
-		//fs.Debugf("muh1","%s",f.mysqlFindParentId(di))
-		//fs.Debugf("muh2","%s",f.mysqlFindMyId(di))
-		fs.Debugf("putid","%s",nid)
-		if f.mysqlIsFile(_dst) {
-			fs.Debugf("put","file exist move to trash")
-			f.mysqlDeleteFile(_dst)
+		//FIXME: check for errors
+		_, err := basePut(ctx, wrapIn, info, options...)
+		if err != nil {
+			//return nil, err
 		}
-		modT := src.ModTime(ctx).UnixNano()
-		_r, _ :=f.mysqlQuery("replace into meta (id,parent,type,name,modtime,md5,sha1,size,chunks,cname) values (?,?,?,?,?,?,?,?,?,?)",nid,pid,2,fi,modT,o.md5,o.sha1,c.sizeTotal,c.chunkNo,cname)
-		defer _r.Close()
-		o.size = c.sizeTotal
-		o.mysqlID = nid
-		o.cName = cname
-		o.modTime = src.ModTime(ctx)
-		return o, nil
-	
-	
+
+		//c.updateHashes()
+		//fs.Debugf("chunk hash","%s %s",c.md5,c.sha1)
+
+		if c.sizeLeft == 0 && !c.done {
+			// The file has been apparently put by hash, force completion.
+			c.done = true
+		}
+
+	}
+	/* if f.useMD5 {
+		c.md5, _ = src.Hash(ctx,hash.MD5)
+	}
+	if f.useSHA1 {
+		c.sha1, _ = src.Hash(ctx,hash.MD5)
+	} */
+
+	//md5, _ := src.Hash(ctx,hash.MD5)
+	//sha1, _ := src.Hash(ctx,hash.SHA1)
+	fs.Debugf("done", "d")
+	/* info := f.wrapInfo(src, "123", c.sizeTotal)
+	_, errChunk := basePut(ctx, wrapIn, info, options...)
+	if errChunk != nil {
+		return nil, errChunk
+	} */
+	c.updateHashes()
+	o := &Object{
+		remote:  remote,
+		main:    metaObject,
+		size:    c.sizeTotal,
+		f:       f,
+		md5:     c.md5,
+		sha1:    c.sha1,
+		chunksC: c.chunkNo,
+		//chunks: chunks,
+	}
+	//o := f.newObject("", metaObject, c.chunks)
+
+	// mount put: srcro:  srcre: 1/2/3/6.txt remote: 1/2/3/6.txt oroot:
+	//			put new: di: 2/3/ fi: 123.txt
+	// copy put: srcro: /tmp srcre: 123.txt remote: 123.txt oroot: 2/3
+	// 			put new: di: 2/3/ fi: 123.txt
+	_dst := path.Join(f.oroot, remote)
+	di, fi := path.Split(_dst)
+	//di = f.cleanFolderSlashes(di)
+	fs.Debugf("put new", "di: %s fi: %s", di, fi)
+	nid := fmt.Sprint(f.getRandomId()) //f.makeSha1FromString(f.prefixSlash(di+fi))
+	pid := f.mysqlFindMyDirId(di)      //f.prefixSlash(f.cleanFolderSlashes(di))
+
+	//fs.Debugf("muh1","%s",f.mysqlFindParentId(di))
+	//fs.Debugf("muh2","%s",f.mysqlFindMyId(di))
+	fs.Debugf("putid", "%s", nid)
+	if f.mysqlIsFile(_dst) {
+		fs.Debugf("put", "file exist move to trash")
+		f.mysqlDeleteFile(_dst)
+	}
+	modT := src.ModTime(ctx).UnixNano()
+	_r, _ := f.mysqlQuery("replace into meta (id,parent,type,name,modtime,md5,sha1,size,chunks,cname) values (?,?,?,?,?,?,?,?,?,?)", nid, pid, 2, fi, modT, o.md5, o.sha1, c.sizeTotal, c.chunkNo, cname)
+	defer _r.Close()
+	o.size = c.sizeTotal
+	o.mysqlID = nid
+	o.cName = cname
+	o.modTime = src.ModTime(ctx)
+	return o, nil
+
 }
 
 type putFn func(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error)
@@ -1156,7 +1187,7 @@ func (c *chunkingReader) wrapStream(ctx context.Context, in io.Reader, src fs.Ob
 	case c.fs.useMD5:
 		srcObj := fs.UnWrapObjectInfo(src)
 		if srcObj != nil && srcObj.Fs().Features().SlowHash {
-			fs.Debugf("wrapStream","using md5")
+			fs.Debugf("wrapStream", "using md5")
 			fs.Debugf(src, "skip slow MD5 on source file, hashing in-transit")
 			c.hasher = md5.New()
 			break
@@ -1171,7 +1202,7 @@ func (c *chunkingReader) wrapStream(ctx context.Context, in io.Reader, src fs.Ob
 	case c.fs.useSHA1:
 		srcObj := fs.UnWrapObjectInfo(src)
 		if srcObj != nil && srcObj.Fs().Features().SlowHash {
-			fs.Debugf("wrapStream","using sha1")
+			fs.Debugf("wrapStream", "using sha1")
 			fs.Debugf(src, "skip slow SHA1 on source file, hashing in-transit")
 			c.hasher = sha1.New()
 			break
@@ -1186,7 +1217,7 @@ func (c *chunkingReader) wrapStream(ctx context.Context, in io.Reader, src fs.Ob
 	}
 
 	if c.hasher != nil {
-		fs.Debugf("wrapStream","hasher not nil")
+		fs.Debugf("wrapStream", "hasher not nil")
 		baseIn = io.TeeReader(baseIn, c.hasher)
 	}
 	c.baseReader = baseIn
@@ -1207,7 +1238,7 @@ func (c *chunkingReader) updateHashes() {
 
 // Note: Read is not called if wrapped remote performs put by hash.
 func (c *chunkingReader) Read(buf []byte) (bytesRead int, err error) {
-	fs.Debugf("(c *chunkingReader) Read","bytes: %s",bytesRead)
+	fs.Debugf("(c *chunkingReader) Read", "bytes: %s", bytesRead)
 	if c.chunkLimit <= 0 {
 		// Chunk complete - switch to next one.
 		// Note #1:
@@ -1277,13 +1308,13 @@ func (c *chunkingReader) dummyRead(in io.Reader, size int64) error {
 // will return the object and the error, otherwise will return
 // nil and the error
 func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error) {
-	fs.Debugf("Put","start")
+	fs.Debugf("Put", "start")
 	return f.put(ctx, in, src, src.Remote(), options, f.base.Put, "put", nil)
 }
 
 // PutStream uploads to the remote path with the modTime given of indeterminate size
 func (f *Fs) PutStream(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error) {
-	fs.Debugf("Purge","start")
+	fs.Debugf("Purge", "start")
 	return f.put(ctx, in, src, src.Remote(), options, f.base.Features().PutStream, "upload", nil)
 }
 
@@ -1308,7 +1339,7 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 // This will create a duplicate if we upload a new file without
 // checking to see if there is one already - use Put() for that.
 func (f *Fs) PutUnchecked(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error) {
-	fs.Debugf("PutUnchecked","start")
+	fs.Debugf("PutUnchecked", "start")
 	/* do := f.base.Features().PutUnchecked
 	if do == nil {
 		return nil, errors.New("can't PutUnchecked")
@@ -1354,46 +1385,46 @@ func (f *Fs) cleanFolderSlashes(path string) string {
 	return path
 }
 
-func (f *Fs) mysqlQuerySilence(_query string, args ...interface{}) ( err error) {
-	fs.Debugf("mysqlQuerySilence","Query: %s a: %s", _query, args)
+func (f *Fs) mysqlQuerySilence(_query string, args ...interface{}) (err error) {
+	fs.Debugf("mysqlQuerySilence", "Query: %s a: %s", _query, args)
 	db, err := sql.Open("mysql", "rclone:rclone@tcp(10.21.200.152:3306)/rclone")
 	if err != nil {
-        panic(err.Error())
-    }
+		panic(err.Error())
+	}
 	defer db.Close()
 
 	res, err := db.Query(_query, args...)
-	fs.Debugf("mysqlQuerySilence","err",err)
+	fs.Debugf("mysqlQuerySilence", "err", err)
 	//if err != nil {
-    //    panic(err.Error())
-    //}
+	//    panic(err.Error())
+	//}
 	defer res.Close()
 	return err
 }
 
 func (f *Fs) mysqlQuery(_query string, args ...interface{}) (res *sql.Rows, err error) {
-	fs.Debugf("mysqlQuery","Query: %s a: %s", _query, args)
+	fs.Debugf("mysqlQuery", "Query: %s a: %s", _query, args)
 	db, err := sql.Open("mysql", "rclone:rclone@tcp(10.21.200.152:3306)/rclone")
 	if err != nil {
-        panic(err.Error())
-    }
+		panic(err.Error())
+	}
 	defer db.Close()
 
 	res, err = db.Query(_query, args...)
 	if err != nil {
-        panic(err.Error())
-    }
+		panic(err.Error())
+	}
 	//defer res.Close()
 	return
 }
 
-func (f *Fs) mysqlDirExists(path string) bool {
-	// root 
-	if path == "" && path == "/" {
+func (f *Fs) mysqlDirExists(_path string) bool {
+	// root
+	if _path == "" || _path == "/" {
 		return true
 	}
 
-	_r := f.mysqlFindMyDirId(path)
+	_r := f.mysqlFindMyDirId(_path)
 	if _r == "" {
 		return false
 	} else {
@@ -1401,27 +1432,27 @@ func (f *Fs) mysqlDirExists(path string) bool {
 	}
 }
 
-func (f *Fs) mysqlChangeDirParent(idFrom string,idTo string) (err error) {
-	index, err := f.mysqlQuery("update meta set id=? where id=?",idFrom, idTo)
+func (f *Fs) mysqlChangeDirParent(idFrom string, idTo string) (err error) {
+	index, err := f.mysqlQuery("update meta set id=? where id=?", idFrom, idTo)
 	defer index.Close()
 	return err
 }
 
 func (f *Fs) mysqlDirIsEmpty(id string) bool {
-	// root 
+	// root
 	/* if path == "" {
 		return false
 	} */
-	index, _ := f.mysqlQuery("select id from meta where parent=? limit 1",id)
+	index, _ := f.mysqlQuery("select id from meta where parent=? limit 1", id)
 	defer index.Close()
 	//index.Next()
 	//count, _ := index.Columns()
 	state := index.Next()
 	if state == false {
-		fs.Debugf("mysqlDirIsEmpty","true")
+		fs.Debugf("mysqlDirIsEmpty", "true")
 		return true
 	} else {
-		fs.Debugf("mysqlDirIsEmpty","false")
+		fs.Debugf("mysqlDirIsEmpty", "false")
 		return false
 	}
 }
@@ -1430,48 +1461,46 @@ func (f *Fs) mysqlIsFile(_path string) bool {
 	if _path == "" {
 		return false
 	}
-	di, fi :=  path.Split(_path)
+	di, fi := path.Split(_path)
 	pid := f.mysqlFindMyDirId(di)
-	fs.Debugf("mysqlIsFile","pid: %s",pid)
-	index, _ := f.mysqlQuery("select * from meta where type=2 and name=? and parent=?",fi,pid)
+	fs.Debugf("mysqlIsFile", "pid: %s", pid)
+	index, _ := f.mysqlQuery("select * from meta where type=2 and name=? and parent=?", fi, pid)
 	defer index.Close()
 	//index.Next()
 	//count, _ := index.Columns()
 	state := index.Next()
-	fs.Debugf("mysqlIsFile","state: %s",state)
+	fs.Debugf("mysqlIsFile", "state: %s", state)
 	return state
 }
 
 func (f *Fs) mysqlIsFileByID(id string) bool {
-	index, _ := f.mysqlQuery("select * from meta where type=2 and id=?",id)
+	index, _ := f.mysqlQuery("select * from meta where type=2 and id=?", id)
 	defer index.Close()
 	//index.Next()
 	//count, _ := index.Columns()
 	state := index.Next()
-	fs.Debugf("mysqlIsFileByID","%s",state)
+	fs.Debugf("mysqlIsFileByID", "%s", state)
 	return state
 }
 
-
-
 func (f *Fs) mysqlUpdateTime(id string, mod int64) (err error) {
-	index, err := f.mysqlQuery("update meta set modtime=? where id=?",mod,id)
+	index, err := f.mysqlQuery("update meta set modtime=? where id=?", mod, id)
 	defer index.Close()
 	return err
-	
+
 }
 
 func (f *Fs) mysqlQueryCount(_query string, args interface{}) (res int, err error) {
 	db, err := sql.Open("mysql", "rclone:rclone@tcp(10.21.200.152:3306)/rclone")
 	if err != nil {
-        panic(err.Error())
-    }
+		panic(err.Error())
+	}
 	defer db.Close()
 
 	err = db.QueryRow(_query, args).Scan(&res)
 	if err != nil {
-        panic(err.Error())
-    }
+		panic(err.Error())
+	}
 	//defer res.Close()
 	return
 }
@@ -1490,13 +1519,11 @@ func (f *Fs) mysqlQueryCount(_query string, args interface{}) (res int, err erro
 
 } */
 
-
-
 func (f *Fs) mysqlMkDirRe(_path string) {
-	
+
 	_path = f.cleanFolderSlashes(_path)
-	fs.Debugf("mysqlMkDirRe","start: %s",_path)
-	root := strings.Split(_path,"/")
+	fs.Debugf("mysqlMkDirRe", "start: %s", _path)
+	root := strings.Split(_path, "/")
 	if _path == "" {
 		return
 	}
@@ -1505,35 +1532,31 @@ func (f *Fs) mysqlMkDirRe(_path string) {
 	_p := ""
 	_pid := "0"
 	for _, name := range root {
-		_pnew := f.mysqlFindDirId(name,_pid)
-		fs.Debugf("1. mysqlMkDirRe","_pnew: %s _pid: %s name: %s",_pnew,_pid,name)
+		_pnew := f.mysqlFindDirId(name, _pid)
+		fs.Debugf("1. mysqlMkDirRe", "_pnew: %s _pid: %s name: %s", _pnew, _pid, name)
 		_nid := ""
 		if _pnew == "" {
-			_nid = fmt.Sprint(time.Now().UnixNano())
-			fs.Debugf("2. mysqlMkDirRe in","_pnew: %s _pid: %s name: %s",_pnew,_pid,name)
+			_nid = fmt.Sprint(f.getRandomId())
+			fs.Debugf("2. mysqlMkDirRe in", "_pnew: %s _pid: %s name: %s", _pnew, _pid, name)
 			//fs.Debugf("test","%s",time.Now().UnixMilli())
 			//_r, _ := f.mysqlQuery("insert ignore into meta (id, parent, type, name, modtime) values(?, ?, ?, ? ,?)",f.makeSha1FromString(_p+"/"+name), f.makeSha1FromString(_p), 1, name, time.Now().UnixNano())
-			_r, _ := f.mysqlQuery("insert ignore into meta (id, parent, type, name, modtime) values(?, ?, ?, ? ,?)",_nid, _pid, 1, name, time.Now().UnixNano())
+			_r, _ := f.mysqlQuery("insert ignore into meta (id, parent, type, name, modtime) values(?, ?, ?, ? ,?)", _nid, _pid, 1, name, time.Now().UnixNano())
 			defer _r.Close()
 		}
-		_p+= "/"+name
-		
+		_p += "/" + name
+
 		_pid = f.mysqlFindMyDirId(_p)
 	}
 }
 
-
-
 func (f *Fs) Mkdir(ctx context.Context, dir string) error {
-	
 
-	
 	root := path.Join(f.oroot, dir)
-	//_, dname := path.Split(root) 
+	//_, dname := path.Split(root)
 
-	fs.Debugf("MKdir","go dir: %s f.oroot: %s root: %s", dir, f.oroot, root)
+	fs.Debugf("MKdir", "go dir: %s f.oroot: %s root: %s", dir, f.oroot, root)
 
-	if root == ""  {
+	if root == "" {
 		// no folder, silence discard
 		return nil
 	}
@@ -1553,13 +1576,13 @@ func (f *Fs) mysqlRmDir(path string) (err error) {
 }
 
 func (f *Fs) mysqlRmDirByID(id string) (err error) {
-	_r, err := f.mysqlQuery("delete from meta where type=1 and id=?",id)
+	_r, err := f.mysqlQuery("delete from meta where type=1 and id=?", id)
 	defer _r.Close()
 	return err
 }
 
 func (f *Fs) Rmdir(ctx context.Context, dir string) error {
-	fs.Debugf("RmDir","run %s oroot: %s",dir,f.oroot)
+	fs.Debugf("RmDir", "run %s oroot: %s", dir, f.oroot)
 	_id := f.mysqlFindMyDirId(dir)
 	if f.mysqlDirIsEmpty(_id) {
 		f.mysqlRmDirByID(_id)
@@ -1574,24 +1597,23 @@ func (f *Fs) Rmdir(ctx context.Context, dir string) error {
 		of = dir
 	}
 	//if dir == "" {
-		// from cmd
-		p := f.prefixSlash(f.cleanFolderSlashes(of))
-		pid := f.makeSha1FromString(p)
-		fs.Debugf("Rmdir","p: %s pid: %s",p,pid)
-		if f.mysqlDirExists(p) {
-			if f.mysqlDirIsEmpty(p) {
-				//TODO: error handling
-				f.mysqlRmDirByID(pid)
-			} else {
-				return fs.ErrorDirectoryNotEmpty
-			}
+	// from cmd
+	p := f.prefixSlash(f.cleanFolderSlashes(of))
+	pid := f.makeSha1FromString(p)
+	fs.Debugf("Rmdir", "p: %s pid: %s", p, pid)
+	if f.mysqlDirExists(p) {
+		if f.mysqlDirIsEmpty(p) {
+			//TODO: error handling
+			f.mysqlRmDirByID(pid)
 		} else {
-			return fs.ErrorDirNotFound
+			return fs.ErrorDirectoryNotEmpty
 		}
-		fs.Debugf("Rmdir","deleted: %s",p)
+	} else {
+		return fs.ErrorDirNotFound
+	}
+	fs.Debugf("Rmdir", "deleted: %s", p)
 	//} else {
-		// from mount
-		
+	// from mount
 
 	//}
 	//return f.base.Rmdir(ctx, dir)
@@ -1610,7 +1632,7 @@ func (f *Fs) Rmdir(ctx context.Context, dir string) error {
 // active chunks but also all hidden temporary chunks in the directory.
 //
 func (f *Fs) Purge(ctx context.Context, dir string) error {
-	fs.Debugf("Purge","start dir: %s oroot: %s",dir,f.oroot)
+	fs.Debugf("Purge", "start dir: %s oroot: %s", dir, f.oroot)
 	/* do := f.base.Features().Purge
 	if do == nil {
 		return fs.ErrorCantPurge
@@ -1654,9 +1676,9 @@ func (f *Fs) Purge(ctx context.Context, dir string) error {
 // the `delete hidden` flag above or at least the user has been warned.
 //
 func (o *Object) Remove(ctx context.Context) (err error) {
-	fs.Debugf("Remove","run id: %s",o.remote)
+	fs.Debugf("Remove", "run id: %s", o.remote)
 	o.f.mysqlDeleteFile(o.remote)
-	
+
 	return nil
 }
 
@@ -1674,12 +1696,12 @@ func (f *Fs) mysqlDeleteFile(_path string) (err error) {
 
 	o, _ := f.mysqlGetFile(_fid)
 
-	_r, err :=f.mysqlQuery("delete from meta where id=?", _fid)
+	_r, err := f.mysqlQuery("delete from meta where id=?", _fid)
 	defer _r.Close()
 
-	o.mysqlID = fmt.Sprint(time.Now().UnixNano())
+	o.mysqlID = fmt.Sprint(f.getRandomId())
 
-	_r, err =f.mysqlQuery("insert into trash (id,type,name,modtime,md5,sha1,size,chunks,cname,trashtime) values(?,?,?,?,?,?,?,?,?,?)",o.mysqlID,2,o.remote,o.modTime.UnixNano(),o.md5,o.sha1,o.size,o.chunksC,o.cName,o.mysqlID)
+	_r, err = f.mysqlQuery("insert into trash (id,type,name,modtime,md5,sha1,size,chunks,cname,trashtime) values(?,?,?,?,?,?,?,?,?,?)", o.mysqlID, 2, o.remote, o.modTime.UnixNano(), o.md5, o.sha1, o.size, o.chunksC, o.cName, o.mysqlID)
 	defer _r.Close()
 	return nil
 
@@ -1687,13 +1709,11 @@ func (f *Fs) mysqlDeleteFile(_path string) (err error) {
 
 // copyOrMove implements copy or move
 func (f *Fs) copyOrMove(ctx context.Context, o *Object, remote string, do copyMoveFn, md5, sha1, opName string) (fs.Object, error) {
-	fs.Debugf("copyOrMove","run")
+	fs.Debugf("copyOrMove", "run")
 	return nil, nil
 }
 
 type copyMoveFn func(context.Context, fs.Object, string) (fs.Object, error)
-
-
 
 // Copy src to this remote using server-side copy operations.
 //
@@ -1705,7 +1725,7 @@ type copyMoveFn func(context.Context, fs.Object, string) (fs.Object, error)
 //
 // If it isn't possible then return fs.ErrorCantCopy
 func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
-	fs.Debugf("Copy","start src: %s dst: %s",src.Remote(),remote)
+	fs.Debugf("Copy", "start src: %s dst: %s", src.Remote(), remote)
 	//return nil, fs.ErrorCantCopy //fs.ErrorCantCopy
 
 	// when move fail let rclone copy it self
@@ -1722,114 +1742,44 @@ func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object,
 //
 // If it isn't possible then return fs.ErrorCantMove
 
-
-
 func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
-	fs.Debugf("Move","go remote: %s src: %s",remote,src.Remote())
+	fs.Debugf("Move", "go remote: %s src: %s", remote, src.Remote())
 	//return nil, fs.ErrorCantMove
 	if f.mysqlIsFile(remote) {
-		return nil,fs.ErrorDirExists
+		return nil, fs.ErrorDirExists
 	}
 	di, _ := path.Split(remote)
 	_dstDiEx := f.mysqlDirExists(di)
-	if ! _dstDiEx {
+	if !_dstDiEx {
 		return nil, fs.ErrorDirNotFound
 	}
 
 	_dstDiId := f.mysqlFindMyDirId(di)
 	_dstFiId := f.mysqlFindMyFileId(src.Remote())
 
-	fs.Debugf("Move","_dstDiId: %s _dstFiId: %s",_dstDiId,_dstFiId)
+	fs.Debugf("Move", "_dstDiId: %s _dstFiId: %s", _dstDiId, _dstFiId)
 
 	err := f.mysqlMoveFile(_dstFiId, _dstDiId)
 
 	o, err := f.mysqlGetFileByPath(remote)
 
-
-	//time.Sleep(5*time.Second)
-
 	return o, err
-
-	return nil,fs.ErrorCantMove
-	// very complicated atm going to copy mode
-	
-	
-	_dst :=f.prefixSlash(f.cleanFolderSlashes(remote))
-	_src :=f.prefixSlash(f.cleanFolderSlashes(src.Remote()))
-	_dstId := f.makeSha1FromString(_dst)
-	_srcId := f.makeSha1FromString(_src)
-
-	// if src is a file dst is always file. nice rclone
-	// this seems only for mount so the filesystem do all checks and we make it easy her
-
-	if f.mysqlIsFile(_src) {
-		o, err := f.mysqlGetFile(_srcId)
-		if err != nil {
-			return nil, err
-		}
-		if f.mysqlIsFile(_dst) {
-			f.mysqlDeleteFile(_dstId)
-		}
-		dir , _name := path.Split(_dst)
-		dir = f.prefixSlash(f.cleanFolderSlashes(dir))
-		_dstParent := f.makeSha1FromString(dir)
-		fs.Debugf("Move","silent query")
-		err = o.f.mysqlQuerySilence("update meta set name=?,id=?,parent=? where id=?",_name,_dstId,_dstParent,_srcId)
-		if err != nil {
-			return nil, err
-		}
-		/* newobj, err := f.base.NewObject(ctx,_dst)
-		cache.Get(ctx,_dst)
-		if err != nil {
-			return nil, err
-		} */
-		
-		return nil, fs.ErrorCantMove
-	}
-
-	return nil, fs.ErrorCantMove
-	
 }
 
 func (f *Fs) mysqlMoveDir(id string, dstDirId string) (err error) {
-	index, err := f.mysqlQuery("update meta set parent=? where id=?",dstDirId,id)
+	index, err := f.mysqlQuery("update meta set parent=? where id=?", dstDirId, id)
 	defer index.Close()
-	fs.Debugf("mysqlMoveDir","err",err)
+	fs.Debugf("mysqlMoveDir", "err", err)
 	return err
-	
+
 }
 
 func (f *Fs) mysqlMoveFile(id string, dstDirId string) (err error) {
-	index, err := f.mysqlQuery("update meta set parent=? where id=?",dstDirId,id)
+	index, err := f.mysqlQuery("update meta set parent=? where id=?", dstDirId, id)
 	defer index.Close()
-	fs.Debugf("mysqlMoveDir","err",err)
+	fs.Debugf("mysqlMoveDir", "err", err)
 	return err
-	
-}
 
-// baseMove chains to the wrapped Move or simulates it by Copy+Delete
-func (f *Fs) baseMove(ctx context.Context, src fs.Object, remote string, delMode int) (fs.Object, error) {
-	fs.Debugf("baseMove","run")
-	var (
-		dest fs.Object
-		err  error
-	)
-	switch delMode {
-	case delAlways:
-		dest, err = f.base.NewObject(ctx, remote)
-	case delFailed:
-		dest, err = operations.Move(ctx, f.base, nil, remote, src)
-		if err == nil {
-			return dest, err
-		}
-		dest, err = f.base.NewObject(ctx, remote)
-	case delNever:
-		// fall thru, the default
-	}
-	if err != nil {
-		dest = nil
-	}
-	return operations.Move(ctx, f.base, dest, remote, src)
 }
 
 // DirMove moves src, srcRemote to this remote at dstRemote
@@ -1841,7 +1791,7 @@ func (f *Fs) baseMove(ctx context.Context, src fs.Object, remote string, delMode
 //
 // If destination exists then return fs.ErrorDirExists
 func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string) error {
-	fs.Debugf("DirMove","start src: %s srcR: %s dstR: %s",src,srcRemote,dstRemote)
+	fs.Debugf("DirMove", "start src: %s srcR: %s dstR: %s", src, srcRemote, dstRemote)
 
 	_idSrc := f.mysqlFindMyDirId(srcRemote)
 	_idDst := f.mysqlFindMyDirId(dstRemote)
@@ -1850,8 +1800,8 @@ func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string
 
 	_idDstP := f.mysqlFindMyDirId(_di)
 
-	fs.Debugf("DirMove","idSrc: %s idDst: %s idDstP: %s",_idSrc,_idDst,_idDstP)
-	
+	fs.Debugf("DirMove", "idSrc: %s idDst: %s idDstP: %s", _idSrc, _idDst, _idDstP)
+
 	// better than moving
 	if _idDst != "" {
 		return fs.ErrorDirExists
@@ -1859,14 +1809,12 @@ func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string
 	if _idDstP == "" {
 		return fs.ErrorDirNotFound
 	}
-	
+
 	//f.mysqlMkDirRe(dstRemote)
 
 	_idDst = f.mysqlFindMyDirId(dstRemote)
 
-
-
-	f.mysqlMoveDir(_idSrc,_idDstP)
+	f.mysqlMoveDir(_idSrc, _idDstP)
 	return nil
 }
 
@@ -1913,7 +1861,7 @@ func (f *Fs) SetWrapper(wrapper fs.Fs) {
 // Replace data chunk names by the name of composite file.
 // Ignore temporary and control chunks.
 func (f *Fs) ChangeNotify(ctx context.Context, notifyFunc func(string, fs.EntryType), pollIntervalChan <-chan time.Duration) {
-	fs.Debugf("ChangeNotify","run")
+	fs.Debugf("ChangeNotify", "run")
 }
 
 // Shutdown the backend, closing any background tasks and any
@@ -1931,7 +1879,7 @@ type Object struct {
 	remote    string
 	main      fs.Object   // meta object if file is composite, or wrapped non-chunked file, nil if meta format is 'none'
 	chunks    []fs.Object // active data chunks if file is composite, or wrapped file as a single chunk if meta format is 'none'
-	chunksC   int		  // chunk count
+	chunksC   int         // chunk count
 	cName     string      // chunk remote name
 	size      int64       // cached total size of chunks in a composite file or -1 for non-chunked files
 	isFull    bool        // true if metadata has been read
@@ -1943,71 +1891,6 @@ type Object struct {
 	modTime   time.Time
 	mysqlID   string
 	f         *Fs
-}
-
-
-
-// validate verifies the object internals and updates total size
-func (o *Object) validate() error {
-	fs.Debugf("validate","run")
-	if !o.isComposite() {
-		_ = o.mainChunk() // verify that single wrapped chunk exists
-		return nil
-	}
-
-	metaObject := o.main // this file is composite - o.main refers to meta object (or nil if meta format is 'none')
-	if metaObject != nil && metaObject.Size() > maxMetadataSize {
-		// metadata of a chunked file must be a tiny piece of json
-		o.size = -1
-		return fmt.Errorf("%q metadata is too large", o.remote)
-	}
-
-	var totalSize int64
-	for _, chunk := range o.chunks {
-		if chunk == nil {
-			o.size = -1
-			return fmt.Errorf("%q has missing chunks", o)
-		}
-		totalSize += chunk.Size()
-	}
-	o.size = totalSize // cache up the total data size
-	return nil
-}
-
-/* func (f *Fs) newObject(remote string, main fs.Object, chunks []fs.Object) *Object {
-	var size int64 = -1
-	if main != nil {
-		size = main.Size()
-		if remote == "" {
-			remote = main.Remote()
-		}
-	}
-	return &Object{
-		remote: remote,
-		main:   main,
-		size:   size,
-		f:      f,
-		chunks: chunks,
-	}
-} */
-
-// mainChunk returns:
-// - a wrapped object for non-chunked files
-// - meta object for chunked files with metadata
-// - first chunk for chunked files without metadata
-// Never returns nil.
-func (o *Object) mainChunk() fs.Object {
-	if o.main != nil {
-		return o.main // meta object or non-chunked wrapped file
-	}
-	if o.chunks != nil {
-		return o.chunks[0] // first chunk of a chunked composite file
-	}
-	panic("invalid chunked object") // very unlikely
-}
-
-func (o *Object) isComposite() bool {
-	return o.chunks != nil
 }
 
 // Fs returns read only access to the Fs that this object is part of
@@ -2030,7 +1913,7 @@ func (o *Object) Remote() string {
 
 // Size returns the size of the file
 func (o *Object) Size() int64 {
-	fs.Debugf("size","run")
+	fs.Debugf("size", "run")
 	/* if o.isComposite() {
 		return o.size // total size of data chunks in a composite file
 	}
@@ -2040,13 +1923,13 @@ func (o *Object) Size() int64 {
 
 // Storable returns whether object is storable
 func (o *Object) Storable() bool {
-	fs.Debugf("storable","run")
+	fs.Debugf("storable", "run")
 	return true
 }
 
 // ModTime returns the modification time of the file
 func (o *Object) ModTime(ctx context.Context) time.Time {
-	fs.Debugf("modtime","run %s",o.modTime)
+	fs.Debugf("modtime", "run %s", o.modTime)
 	//return o.mainChunk().ModTime(ctx)
 
 	return o.modTime
@@ -2054,11 +1937,11 @@ func (o *Object) ModTime(ctx context.Context) time.Time {
 
 // SetModTime sets the modification time of the file
 func (o *Object) SetModTime(ctx context.Context, mtime time.Time) error {
-	fs.Debugf("setmodtime","run: new: %s obj: %s", mtime,o.modTime)
-	o.f.mysqlUpdateTime(o.mysqlID,mtime.UnixNano())
+	fs.Debugf("setmodtime", "run: new: %s obj: %s", mtime, o.modTime)
+	o.f.mysqlUpdateTime(o.mysqlID, mtime.UnixNano())
 	o.modTime = mtime
-	
-	fs.Debugf("setmodtime","changed: new: %s obj: %s", mtime,o.modTime)
+
+	fs.Debugf("setmodtime", "changed: new: %s obj: %s", mtime, o.modTime)
 	return nil
 	//return o.mainChunk().SetModTime(ctx, mtime)
 }
@@ -2082,24 +1965,24 @@ func (o *Object) SetModTime(ctx context.Context, mtime time.Time) error {
 // on the level of wrapped remote but chunker is unaware of that.
 //
 func (o *Object) Hash(ctx context.Context, hashType hash.Type) (string, error) {
-	fs.Debugf("Hash","run md5: %s sha1: %s",o.md5,o.sha1)
+	fs.Debugf("Hash", "run md5: %s sha1: %s", o.md5, o.sha1)
 	//FIXME: hash
 	//return "", nil
 	//return o.Hash(ctx,hashType)
 	switch hashType {
-case hash.MD5:
-	if o.md5 == "" {
-		return "", nil
+	case hash.MD5:
+		if o.md5 == "" {
+			return "", nil
+		}
+		return o.md5, nil
+	case hash.SHA1:
+		if o.sha1 == "" {
+			return "", nil
+		}
+		return o.sha1, nil
+	default:
+		return "", hash.ErrUnsupported
 	}
-	return o.md5, nil
-case hash.SHA1:
-	if o.sha1 == "" {
-		return "", nil
-	}
-	return o.sha1, nil
-default:
-	return "", hash.ErrUnsupported
-}
 	/* fs.Debugf("hash","run")
 	if err := o.readMetadata(ctx); err != nil {
 		return "", err // valid metadata is required to get hash, abort
@@ -2130,25 +2013,25 @@ default:
 
 // Open opens the file for read.  Call Close() on the returned io.ReadCloser
 func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (rc io.ReadCloser, err error) {
-	fs.Debugf("open","run remote: %s %s",o.Remote(),o.chunks)
+	fs.Debugf("open", "run remote: %s %s", o.Remote(), o.chunks)
 	//f.makeSha1FromString(cname+fmt.Sprint(c.chunkNo))[0:1]
 	//return o.Open(ctx, options...)
 	if o.chunks == nil {
-		fs.Debugf("open","chunks nil count: %s",o.chunksC)
-		if o.chunksC <=0 {
+		fs.Debugf("open", "chunks nil count: %s", o.chunksC)
+		if o.chunksC <= 0 {
 			panic("chunks missing")
 		}
 		for i := 0; i < o.chunksC; i++ {
-			cn := o.f.makeSha1FromString(o.cName+fmt.Sprint(i))[0:1] + "/" + o.cName + "." + fmt.Sprint(i)
-			o.f.root=""
-			fs.Debugf("new chunk","%s",cn)
-			
+			cn := o.f.makeSha1FromString(o.cName + fmt.Sprint(i))[0:1] + "/" + o.cName + "." + fmt.Sprint(i)
+			o.f.root = ""
+			fs.Debugf("new chunk", "%s", cn)
+
 			//t,_ := NewFs(ctx,"privacer",":",nil)
 			//chunk, err :=t.NewObject(ctx,cn)
 			//buf, err := o.f.base.List(ctx,"")
 			//fs.Debugf("buf","%s",buf)
-			c, err :=cache.Get(ctx,o.f.opt.Remote)
-			chunk, err :=c.NewObject(ctx,cn)
+			c, err := cache.Get(ctx, o.f.opt.Remote)
+			chunk, err := c.NewObject(ctx, cn)
 			////chunk, err  := o.f.base.NewObject(ctx, "//"+cn)
 			//chunk, err  := o.f.NewObject(ctx, cn)
 			//chunk1, err  :=chunk1.Fs().base.NewObject(ctx, cn)
@@ -2160,7 +2043,7 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (rc io.Read
 			//nfs, _ := fs.NewFs(nil,o.f.name+":")
 			//chunk ,_ :=nfs.NewObject(ctx, cn)
 			o.chunks = append(o.chunks, chunk)
-			
+
 		}
 	}
 	var openOptions []fs.OpenOption
@@ -2169,14 +2052,14 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (rc io.Read
 	for _, option := range options {
 		switch opt := option.(type) {
 		case *fs.SeekOption:
-			fs.Debugf("Open","seekOption opt.Offset: %s",opt.Offset)
+			fs.Debugf("Open", "seekOption opt.Offset: %s", opt.Offset)
 			offset = opt.Offset
 		case *fs.RangeOption:
-			fs.Debugf("open","range o.size: %s remote: %s",o.size,o.remote)
+			fs.Debugf("open", "range o.size: %s remote: %s", o.size, o.remote)
 			offset, limit = opt.Decode(o.size)
 		default:
 			// pass Options on to the wrapped open, if appropriate
-			fs.Debugf("Open","default %s",option)
+			fs.Debugf("Open", "default %s", option)
 			openOptions = append(openOptions, option)
 		}
 	}
@@ -2185,12 +2068,12 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (rc io.Read
 		return nil, errors.New("invalid offset")
 	}
 	if limit < 0 {
-		fs.Debugf("Open","size: %s",o.size-offset)
+		fs.Debugf("Open", "size: %s", o.size-offset)
 		limit = o.size - offset
 	}
 
 	return o.newLinearReader(ctx, offset, limit, openOptions)
-	
+
 }
 
 // linearReader opens and reads file chunks sequentially, without read-ahead
@@ -2206,45 +2089,45 @@ type linearReader struct {
 }
 
 func (o *Object) newLinearReader(ctx context.Context, offset, limit int64, options []fs.OpenOption) (io.ReadCloser, error) {
-	
+
 	r := &linearReader{
 		ctx:     ctx,
 		chunks:  o.chunks,
 		options: options,
 		limit:   limit,
 	}
-	fs.Debugf("newLinearReader","run %s %s",o.remote,len(r.chunks))
+	fs.Debugf("newLinearReader", "run %s %s", o.remote, len(r.chunks))
 	// skip to chunk for given offset
 	err := io.EOF
 	for offset >= 0 && err != nil {
-		fs.Debugf("newLinearReader","nextChunk")
+		fs.Debugf("newLinearReader", "nextChunk")
 		offset, err = r.nextChunk(offset)
-		fs.Debugf("newLinearReader","nextChunk offset: %s err: %s",offset,err)
+		fs.Debugf("newLinearReader", "nextChunk offset: %s err: %s", offset, err)
 	}
-	
+
 	if err == nil || err == io.EOF {
 		//panic((""))
 		r.err = err
 		return r, nil
 	}
-	
+
 	return nil, err
 }
 
 func (r *linearReader) nextChunk(offset int64) (int64, error) {
-	fs.Debugf("(r *linearReader) nextChunk","run offset: %s r.pos: %s lenChunks: %s",offset,r.pos,len(r.chunks))
+	fs.Debugf("(r *linearReader) nextChunk", "run offset: %s r.pos: %s lenChunks: %s", offset, r.pos, len(r.chunks))
 
 	if r.err != nil {
 		return -1, r.err
 	}
 	if r.pos >= len(r.chunks) || r.limit <= 0 || offset < 0 {
-		fs.Debugf("nextChunk","break %s %s %s",len(r.chunks),r.limit,offset)
+		fs.Debugf("nextChunk", "break %s %s %s", len(r.chunks), r.limit, offset)
 		return -1, io.EOF
 	}
 
 	chunk := r.chunks[r.pos]
 	count := chunk.Size()
-	fs.Debugf("nextChunk","chunk: %s count: %s",chunk,count)
+	fs.Debugf("nextChunk", "chunk: %s count: %s", chunk, count)
 	r.pos++
 
 	if offset >= count {
@@ -2261,7 +2144,7 @@ func (r *linearReader) nextChunk(offset int64) (int64, error) {
 	}
 
 	reader, err := chunk.Open(r.ctx, options...)
-	fs.Debugf("nectChunk","chunk.Open")
+	fs.Debugf("nectChunk", "chunk.Open")
 	if err != nil {
 		return -1, err
 	}
@@ -2272,21 +2155,21 @@ func (r *linearReader) nextChunk(offset int64) (int64, error) {
 }
 
 func (r *linearReader) Read(p []byte) (n int, err error) {
-	fs.Debugf("(r *linearReader) Read","run count: %s limit: %s pos: %s",r.count,r.limit,r.pos)
+	fs.Debugf("(r *linearReader) Read", "run count: %s limit: %s pos: %s", r.count, r.limit, r.pos)
 	//panic("")
 	if r.err != nil {
-		fs.Debugf("(r *linearReader) Read","err: %s",r.err)
+		fs.Debugf("(r *linearReader) Read", "err: %s", r.err)
 		//panic(r.pos)
 		return 0, r.err
 	}
-	
+
 	if r.limit <= 0 {
 		r.err = io.EOF
 		return 0, io.EOF
 	}
-fs.Debugf("123","%s",r.count)
+	fs.Debugf("123", "%s", r.count)
 	for r.count <= 0 {
-		
+
 		// current chunk has been read completely or its size is zero
 		off, err := r.nextChunk(0)
 		if off < 0 {
@@ -2308,7 +2191,7 @@ fs.Debugf("123","%s",r.count)
 }
 
 func (r *linearReader) Close() (err error) {
-	fs.Debugf("(r *linearReader) Close()","run")
+	fs.Debugf("(r *linearReader) Close()", "run")
 	if r.reader != nil {
 		err = r.reader.Close()
 		r.reader = nil
@@ -2375,8 +2258,8 @@ func (oi *ObjectInfo) Size() int64 {
 func (oi *ObjectInfo) ModTime(ctx context.Context) time.Time {
 	//return oi.src.ModTime(ctx)
 	now := time.Now().Unix()
-	mod := rand.Int63n(now - 1000) + 1000
-	return time.Unix(mod,0)
+	mod := rand.Int63n(now-1000) + 1000
+	return time.Unix(mod, 0)
 }
 
 // Hash returns the selected checksum of the wrapped file
@@ -2410,7 +2293,7 @@ func (oi *ObjectInfo) Hash(ctx context.Context, hashType hash.Type) (string, err
 
 // ID returns the ID of the Object if known, or "" if not
 func (o *Object) ID() string {
-	fs.Debugf("ID","run mysqlIS: %s",o.mysqlID)
+	fs.Debugf("ID", "run mysqlIS: %s", o.mysqlID)
 	return o.mysqlID
 	/* if doer, ok := o.mainChunk().(fs.IDer); ok {
 		return doer.ID()
@@ -2568,21 +2451,21 @@ func (f *Fs) CanQuickRename() bool {
 
 // Check the interfaces are satisfied
 var (
-	_ fs.Fs              = (*Fs)(nil)
-	_ fs.Purger          = (*Fs)(nil)
-	_ fs.Copier          = (*Fs)(nil)
-	_ fs.Mover           = (*Fs)(nil)
-	_ fs.DirMover        = (*Fs)(nil)
-	_ fs.PutUncheckeder  = (*Fs)(nil)
-	_ fs.PutStreamer     = (*Fs)(nil)
-	_ fs.CleanUpper      = (*Fs)(nil)
-	_ fs.UnWrapper       = (*Fs)(nil)
-	_ fs.ListRer         = (*Fs)(nil)
-	_ fs.Abouter         = (*Fs)(nil)
-	_ fs.Wrapper         = (*Fs)(nil)
-	_ fs.ChangeNotifier  = (*Fs)(nil)
-	_ fs.Shutdowner      = (*Fs)(nil)
-	_ fs.ObjectInfo      = (*ObjectInfo)(nil)
-	_ fs.Object          = (*Object)(nil)
-	_ fs.IDer            = (*Object)(nil)
+	_ fs.Fs             = (*Fs)(nil)
+	_ fs.Purger         = (*Fs)(nil)
+	_ fs.Copier         = (*Fs)(nil)
+	_ fs.Mover          = (*Fs)(nil)
+	_ fs.DirMover       = (*Fs)(nil)
+	_ fs.PutUncheckeder = (*Fs)(nil)
+	_ fs.PutStreamer    = (*Fs)(nil)
+	_ fs.CleanUpper     = (*Fs)(nil)
+	_ fs.UnWrapper      = (*Fs)(nil)
+	_ fs.ListRer        = (*Fs)(nil)
+	_ fs.Abouter        = (*Fs)(nil)
+	_ fs.Wrapper        = (*Fs)(nil)
+	_ fs.ChangeNotifier = (*Fs)(nil)
+	_ fs.Shutdowner     = (*Fs)(nil)
+	_ fs.ObjectInfo     = (*ObjectInfo)(nil)
+	_ fs.Object         = (*Object)(nil)
+	_ fs.IDer           = (*Object)(nil)
 )

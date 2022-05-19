@@ -58,5 +58,7 @@
 ```
 
 ## Trash background Stats line
-```2022/05/19 22:06:00 INFO  : trashRunner: (8) Trashed Files. (1.416Gi) Total Size.
+
+```
+2022/05/19 22:06:00 INFO  : trashRunner: (8) Trashed Files. (1.416Gi) Total Size.
 ```

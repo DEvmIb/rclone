@@ -533,7 +533,7 @@ func trashRunnerDelete(f *Fs, ctx context.Context) {
 			return
 		}
 
-			fs.Debugf("trashRunnerDelete","%s",_record.name)
+			fs.Debugf("trashRunner","Delete: %s",_record.name)
 
 			for i := 0; i < _record.chunks; i++ {
 				_cname := f.makeSha1FromString(_record.cname + fmt.Sprint(i))[0:1]+"/"+_record.cname+"."+fmt.Sprint(i)
@@ -1600,34 +1600,6 @@ func (f *Fs) Rmdir(ctx context.Context, dir string) error {
 	} else {
 		return fs.ErrorDirectoryNotEmpty
 	}
-	return nil
-	of := ""
-	if dir == "" {
-		of = f.oroot
-	} else {
-		of = dir
-	}
-	//if dir == "" {
-	// from cmd
-	p := f.prefixSlash(f.cleanFolderSlashes(of))
-	pid := f.makeSha1FromString(p)
-	fs.Debugf("Rmdir", "p: %s pid: %s", p, pid)
-	if f.mysqlDirExists(p) {
-		if f.mysqlDirIsEmpty(p) {
-			//TODO: error handling
-			f.mysqlRmDirByID(pid)
-		} else {
-			return fs.ErrorDirectoryNotEmpty
-		}
-	} else {
-		return fs.ErrorDirNotFound
-	}
-	fs.Debugf("Rmdir", "deleted: %s", p)
-	//} else {
-	// from mount
-
-	//}
-	//return f.base.Rmdir(ctx, dir)
 	return nil
 }
 

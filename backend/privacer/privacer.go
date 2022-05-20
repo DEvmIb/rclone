@@ -2,6 +2,8 @@
 //TODO: delayed deletion. on file or dir remove only metadata delete. remove files later by command. bonbon .trash folder
 //			-- move to trash -- done
 //			-- manage trash
+//				-- auto background -- done
+//				-- clean manual cmd
 //TODO: folders and files additional random id needed for delayed delete. -- done
 //TODO: SetModTime -- done
 //TODO: move -- done
@@ -9,12 +11,14 @@
 //TODO: remove -- done checking
 //TODO: rmdir -- done checking
 //TODO: copy
-//TODO: remove file to trash after up -- done
-//TODO: defer external sql function how to
+//TODO: remove file to trash when overwrite -- done
+//TODO: defer external sql function how to -- no solution without more code.. aborted
 //TODO: honor max chunk size
 //TODO: copy file to mount. will it instant added to mysql or on write-back-delay? .. on write-back..nice
 //TODO: optimize mysql querys
 //TODO: add failed uploads to trash or delete direct
+//TODO: all switches
+
 
 // copy or move is for file
 
@@ -50,6 +54,7 @@ import (
 	"database/sql"
 
 	_ "github.com/go-sql-driver/mysql"
+	_ "github.com/mattn/go-sqlite3"
 )
 
 //
@@ -330,12 +335,32 @@ func NewFs(ctx context.Context, name, rpath string, m configmap.Mapper) (fs.Fs, 
 		return nil, errors.New("can't use chunker on a backend which doesn't support server-side move or copy")
 	}
 
+
+
+	use_sqlite := true
+	//fs.Debugf("mysqlQuery", "Query: %s a: %s", _query, args)
+	var db *sql.DB
+	if use_sqlite {
+		//   /lxc/_db/rclone-meta-test.db
+		db, err = sql.Open("sqlite3", "file:/lxc/_db/rclone-meta-test.db?mode=rwc&_journal_mode=wal&_txlock=immediate")
+		db.SetMaxOpenConns(10)
+	} else {
+		db, err = sql.Open("mysql", "rclone:rclone@tcp(10.21.200.152:3306)/rclone")
+	}
+	//defer db.Close()
+	if err != nil {
+		panic("sql error")
+	}
+
+
+
 	f := &Fs{
 		base:  baseFs,
 		name:  name,
 		root:  rpath,
 		oroot: orpath,
 		opt:   *opt,
+		db: db,
 	}
 	cache.PinUntilFinalized(f.base, f)
 	f.dirSort = true // processEntries requires that meta Objects prerun data chunks atm.
@@ -377,6 +402,9 @@ func NewFs(ctx context.Context, name, rpath string, m configmap.Mapper) (fs.Fs, 
 	c := cron.New()
 	c.AddFunc("*/60 * * * * *", func() { trashRunnerStats(f) })
 	c.AddFunc("* 60 * * * *", func() { trashRunnerDelete(f, ctx) })
+
+	trashRunnerDelete(f, ctx)
+	
 	c.Start()
 
 	return f, err
@@ -427,6 +455,7 @@ type Fs struct {
 	features    *fs.Features // optional features
 	dirSort     bool         // reserved for future, ignored
 	useNoRename bool         // can be set with the transactions option
+	db			*sql.DB
 }
 
 func (f *Fs) getRandomId() int64 {
@@ -533,10 +562,10 @@ func trashRunnerDelete(f *Fs, ctx context.Context) {
 			return
 		}
 
-			fs.Debugf("trashRunner","Delete: %s",_record.name)
+			fs.Infof("trashRunner","Delete: %s",_record.name)
 
 			for i := 0; i < _record.chunks; i++ {
-				_cname := f.makeSha1FromString(_record.cname + fmt.Sprint(i))[0:1]+"/"+_record.cname+"."+fmt.Sprint(i)
+				_cname := f.makeSha1FromString(_record.cname + fmt.Sprint(i))[0:2]+"/"+_record.cname+"."+fmt.Sprint(i)
 				fs.Infof("trashRunnerDelete","%s deleting chunk: %s",_record.name,_cname)
 				_chunk , err := f.base.NewObject(ctx, _cname)
 				if err != nil {
@@ -549,8 +578,8 @@ func trashRunnerDelete(f *Fs, ctx context.Context) {
 				}
 			}
 
-			_del, err := f.mysqlQuery("delete from trash where id=?",_record.id)
-			defer _del.Close()
+			err = f.mysqlInsert("delete from trash where id=?",_record.id)
+			
 			if err != nil {
 				fs.Infof("trashRunnerDelete","error deleting:",_record.name)
 			} else {
@@ -1043,6 +1072,9 @@ func (f *Fs) put(
 
 	c := f.newChunkingReader(src)
 
+
+
+
 	/* defer func() {
 		if err != nil {
 			c.rollback(ctx, metaObject)
@@ -1064,10 +1096,10 @@ func (f *Fs) put(
 		min = -1
 		max = -1
 	} else {
-		s := c.sizeTotal / 2 / 2
+		s := c.sizeTotal / 4 / 2
 		min = s
-		max = c.sizeTotal - min
-		//c.chunkSize = max
+		max = c.sizeTotal / 4
+		//c.chunkSize = max1
 	}
 
 	cname := fmt.Sprint(f.getRandomId())
@@ -1084,7 +1116,7 @@ func (f *Fs) put(
 			size = c.chunkLimit
 		}
 
-		info := f.wrapInfo(src, f.makeSha1FromString(cname + fmt.Sprint(c.chunkNo))[0:1]+"/"+cname+"."+fmt.Sprint(c.chunkNo), size)
+		info := f.wrapInfo(src, f.makeSha1FromString(cname + fmt.Sprint(c.chunkNo))[0:2]+"/"+cname+"."+fmt.Sprint(c.chunkNo), size)
 
 		//FIXME: check for errors
 		_, err := basePut(ctx, wrapIn, info, options...)
@@ -1148,8 +1180,17 @@ func (f *Fs) put(
 		f.mysqlDeleteFile(_dst)
 	}
 	modT := src.ModTime(ctx).UnixNano()
-	_r, _ := f.mysqlQuery("replace into meta (id,parent,type,name,modtime,md5,sha1,size,chunks,cname) values (?,?,?,?,?,?,?,?,?,?)", nid, pid, 2, fi, modT, o.md5, o.sha1, c.sizeTotal, c.chunkNo, cname)
-	defer _r.Close()
+	//TODO: error handling
+	err = f.mysqlInsert("insert into meta (id,parent,type,name,modtime,md5,sha1,size,chunks,cname) values (?,?,?,?,?,?,?,?,?,?)", nid, pid, 2, fi, modT, o.md5, o.sha1, c.sizeTotal, c.chunkNo, cname)
+	if err != nil {
+		panic(err)
+	}
+	fs.Debugf("put","%s",err)
+	//defer _r.Close()
+	//TODO: err handle
+	if err != nil {
+		panic(err)
+	}
 	o.size = c.sizeTotal
 	o.mysqlID = nid
 	o.cName = cname
@@ -1413,15 +1454,58 @@ func (f *Fs) mysqlQuerySilence(_query string, args ...interface{}) (err error) {
 	return err
 }
 
+func (f *Fs) mysqlInsert(_query string, args ...interface{}) (err error) {
+	fs.Debugf("mysqlInsert", "Query: %s a: %s", _query, args)
+/* 	use_sqlite := true
+	
+	var db *sql.DB
+	if use_sqlite {
+		//   /lxc/_db/rclone-meta-test.db
+		db, err = sql.Open("sqlite3", "file:/lxc/_db/rclone-meta-test.db?cache=shared&mode=rwc&_journal=WAL&_busy_timeout=5000")
+		db.SetMaxOpenConns(1)
+	} else {
+		db, err = sql.Open("mysql", "rclone:rclone@tcp(10.21.200.152:3306)/rclone")
+	}
+	defer db.Close()
+	if err != nil {
+		return
+	} */
+	fs.Debugf("mysqlInsert","Prepare")
+	p, err := f.db.Prepare(_query)
+	fs.Debugf("mysqlInsert","Prepare end")
+	defer p.Close()
+	if err != nil {
+		fs.Debugf("mysqlInsert","err: %s",err)
+		return
+	}
+	fs.Debugf("mysqlInsert","run query")
+	_, err = p.Exec(args...)
+	
+	if err != nil {
+		fs.Debugf("mysqlInsert","err: %s",err)
+		return
+	}
+	return
+}
+
 func (f *Fs) mysqlQuery(_query string, args ...interface{}) (res *sql.Rows, err error) {
 	fs.Debugf("mysqlQuery", "Query: %s a: %s", _query, args)
-	db, err := sql.Open("mysql", "rclone:rclone@tcp(10.21.200.152:3306)/rclone")
+	/* 	use_sqlite := true
+	
+	var db *sql.DB
+	if use_sqlite {
+		//   /lxc/_db/rclone-meta-test.db
+		db, err = sql.Open("sqlite3", "file:/lxc/_db/rclone-meta-test.db?cache=shared&mode=rwc&_journal=WAL&_busy_timeout=5000")
+		db.SetMaxOpenConns(1)
+	} else {
+		db, err = sql.Open("mysql", "rclone:rclone@tcp(10.21.200.152:3306)/rclone")
+	}
 	if err != nil {
 		panic(err.Error())
 	}
 	defer db.Close()
-
-	res, err = db.Query(_query, args...)
+ */
+	res, err = f.db.Query(_query, args...)
 	if err != nil {
 		panic(err.Error())
 	}
@@ -1444,9 +1528,9 @@ func (f *Fs) mysqlDirExists(_path string) bool {
 }
 
 func (f *Fs) mysqlChangeDirParent(idFrom string, idTo string) (err error) {
-	index, err := f.mysqlQuery("update meta set id=? where id=?", idFrom, idTo)
-	defer index.Close()
-	return err
+	err = f.mysqlInsert("update meta set id=? where id=?", idFrom, idTo)
+	//defer index.Close()
+	return
 }
 
 func (f *Fs) mysqlDirIsEmpty(id string) bool {
@@ -1495,9 +1579,9 @@ func (f *Fs) mysqlIsFileByID(id string) bool {
 }
 
 func (f *Fs) mysqlUpdateTime(id string, mod int64) (err error) {
-	index, err := f.mysqlQuery("update meta set modtime=? where id=?", mod, id)
-	defer index.Close()
-	return err
+	err = f.mysqlInsert("update meta set modtime=? where id=?", mod, id)
+	//defer index.Close()
+	return
 
 }
 
@@ -1551,8 +1635,9 @@ func (f *Fs) mysqlMkDirRe(_path string) {
 			fs.Debugf("2. mysqlMkDirRe in", "_pnew: %s _pid: %s name: %s", _pnew, _pid, name)
 			//fs.Debugf("test","%s",time.Now().UnixMilli())
 			//_r, _ := f.mysqlQuery("insert ignore into meta (id, parent, type, name, modtime) values(?, ?, ?, ? ,?)",f.makeSha1FromString(_p+"/"+name), f.makeSha1FromString(_p), 1, name, time.Now().UnixNano())
-			_r, _ := f.mysqlQuery("insert ignore into meta (id, parent, type, name, modtime) values(?, ?, ?, ? ,?)", _nid, _pid, 1, name, time.Now().UnixNano())
-			defer _r.Close()
+			//TODO error handling
+			f.mysqlInsert("insert into meta (id, parent, type, name, modtime) values(?, ?, ?, ? ,?)", _nid, _pid, 1, name, time.Now().UnixNano())
+			//defer _r.Close()
 		}
 		_p += "/" + name
 
@@ -1587,9 +1672,8 @@ func (f *Fs) mysqlRmDir(path string) (err error) {
 }
 
 func (f *Fs) mysqlRmDirByID(id string) (err error) {
-	_r, err := f.mysqlQuery("delete from meta where type=1 and id=?", id)
-	defer _r.Close()
-	return err
+	err = f.mysqlInsert("delete from meta where type=1 and id=?", id)
+	return
 }
 
 func (f *Fs) Rmdir(ctx context.Context, dir string) error {
@@ -1679,13 +1763,20 @@ func (f *Fs) mysqlDeleteFile(_path string) (err error) {
 
 	o, _ := f.mysqlGetFile(_fid)
 
-	_r, err := f.mysqlQuery("delete from meta where id=?", _fid)
-	defer _r.Close()
+	err = f.mysqlInsert("delete from meta where id=?", _fid)
+	if err != nil {
+		return err
+	}
+	//defer _r.Close()
 
 	o.mysqlID = fmt.Sprint(f.getRandomId())
 
-	_r, err = f.mysqlQuery("insert into trash (id,type,name,modtime,md5,sha1,size,chunks,cname,trashtime) values(?,?,?,?,?,?,?,?,?,?)", o.mysqlID, 2, o.remote, o.modTime.UnixNano(), o.md5, o.sha1, o.size, o.chunksC, o.cName, o.mysqlID)
-	defer _r.Close()
+	//TODO: error handling
+	err = f.mysqlInsert("insert into trash (id,type,name,modtime,md5,sha1,size,chunks,cname,trashtime) values(?,?,?,?,?,?,?,?,?,?)", o.mysqlID, 2, o.remote, o.modTime.UnixNano(), o.md5, o.sha1, o.size, o.chunksC, o.cName, o.mysqlID)
+	if err != nil {
+		return err
+	}
+	//defer _r.Close()
 	return nil
 
 }
@@ -1750,18 +1841,16 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 }
 
 func (f *Fs) mysqlMoveDir(id string, dstDirId string) (err error) {
-	index, err := f.mysqlQuery("update meta set parent=? where id=?", dstDirId, id)
-	defer index.Close()
+	err = f.mysqlInsert("update meta set parent=? where id=?", dstDirId, id)
 	fs.Debugf("mysqlMoveDir", "err", err)
-	return err
+	return
 
 }
 
 func (f *Fs) mysqlMoveFile(id string, dstDirId string) (err error) {
-	index, err := f.mysqlQuery("update meta set parent=? where id=?", dstDirId, id)
-	defer index.Close()
+	err = f.mysqlInsert("update meta set parent=? where id=?", dstDirId, id)
 	fs.Debugf("mysqlMoveDir", "err", err)
-	return err
+	return
 
 }
 
@@ -2005,7 +2094,7 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (rc io.Read
 			panic("chunks missing")
 		}
 		for i := 0; i < o.chunksC; i++ {
-			cn := o.f.makeSha1FromString(o.cName + fmt.Sprint(i))[0:1] + "/" + o.cName + "." + fmt.Sprint(i)
+			cn := o.f.makeSha1FromString(o.cName + fmt.Sprint(i))[0:2] + "/" + o.cName + "." + fmt.Sprint(i)
 			o.f.root = ""
 			fs.Debugf("new chunk", "%s", cn)
 

@@ -56,6 +56,14 @@ func init() {
 		Description: "SSH/SFTP Connection",
 		NewFs:       NewFs,
 		Options: []fs.Option{{
+			Name:     "use_du",
+			Help:     "use du for usage",
+			Required: false,
+		}, {
+			Name:     "du_path",
+			Help:     "path to use for du",
+			Required: false,
+		}, {
 			Name:     "host",
 			Help:     "SSH host to connect to.\n\nE.g. \"example.com\".",
 			Required: true,
@@ -255,6 +263,8 @@ Set to 0 to keep connections indefinitely.
 
 // Options defines the configuration for this backend
 type Options struct {
+	UseDu                    bool      `config:"use_du"`
+	DuPath                    string      `config:"du_path"`
 	Host                    string      `config:"host"`
 	User                    string      `config:"user"`
 	Port                    string      `config:"port"`
@@ -1223,7 +1233,23 @@ func (f *Fs) About(ctx context.Context) (*fs.Usage, error) {
 		return nil, fmt.Errorf("your remote may not have the required df utility: %w", err)
 	}
 
+
 	usageTotal, usageUsed, usageAvail := parseUsage(stdout)
+
+	if f.opt.UseDu {
+		_p := escapedPath
+
+		if f.opt.DuPath != "" {
+			_p = f.opt.DuPath
+		}
+
+		stdoutdu, err := f.run(ctx, "du -sk "+_p)
+		if err != nil {
+			return nil, fmt.Errorf("your remote may not have the required du utility: %w", err)
+		}
+		usageUsed = parseUsageDu(stdoutdu)
+	}
+
 	usage := &fs.Usage{}
 	if usageTotal >= 0 {
 		usage.Total = fs.NewUsageValue(usageTotal)
@@ -1350,6 +1376,23 @@ func parseUsage(bytes []byte) (spaceTotal int64, spaceUsed int64, spaceAvail int
 		spaceAvail = -1
 	}
 	return spaceTotal * 1024, spaceUsed * 1024, spaceAvail * 1024
+}
+
+func parseUsageDu(bytes []byte) (spaceUsed int64) {
+	spaceUsed = -1
+	lines := strings.Split(string(bytes), "\n")
+	if len(lines) < 1 {
+		return
+	}
+	split := strings.Fields(lines[0])
+	if len(split) < 2 {
+		return
+	}
+	spaceUsed, err := strconv.ParseInt(split[0], 10, 64)
+	if err != nil {
+		spaceUsed = -1
+	}
+	return spaceUsed * 1024
 }
 
 // Size returns the size in bytes of the remote sftp file

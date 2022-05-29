@@ -594,12 +594,12 @@ func (f *Fs) mysqlFindFileId(fiName string, startId string) (id string, err erro
 }
 
 func (f *Fs) mysqlFindMyDirId(dir string) (id string, err error) {
-	id = "0"
+	id = ""
 	dir = f.prefixSlash(f.cleanFolderSlashes(dir))
 	if dir != "" {
 		lo := strings.Split(dir, "/")
 		for i := 1; i < len(lo); i++ {
-			fs.Debugf("mysqlFindMyId", "find: %s", lo[i])
+			fs.Debugf("mysqlFindDirMyId", "find: %s", lo[i])
 			//if i == 0 {
 			id, err = f.mysqlFindDirId(lo[i], id)
 			if err != nil {

@@ -214,7 +214,7 @@ func NewFs(ctx context.Context, name, rpath string, m configmap.Mapper) (fs.Fs, 
 			_, _ = db.Exec(`CREATE TABLE 'meta' (
 				'id' bigint NOT NULL,
 				'parent' bigint NOT NULL,
-				'type' int NOT NULL,
+				'type' int NOT NULL,1
 				'name' text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
 				'modtime' bigint NOT NULL,
 				'md5' text COLLATE utf8mb4_unicode_ci NOT NULL,
@@ -885,7 +885,7 @@ func (f *Fs) put(
 
 	wrapIn := c.wrapStream(ctx, in, src)
 
-	minChunks := int64(3)
+	minChunks := int64(2)
 
 	//body return check must be
 	var min, max int64
@@ -1297,23 +1297,6 @@ func (f *Fs) cleanFolderSlashes(path string) string {
 		path = strings.TrimSuffix(path, "/")
 	}
 	return path
-}
-
-func (f *Fs) mysqlQuerySilence(_query string, args ...interface{}) (err error) {
-	fs.Debugf("mysqlQuerySilence", "Query: %s a: %s", _query, args)
-	db, err := sql.Open("mysql", "rclone:rclone@tcp(10.21.200.152:3306)/rclone")
-	if err != nil {
-		panic(err.Error())
-	}
-	defer db.Close()
-
-	res, err := db.Query(_query, args...)
-	fs.Debugf("mysqlQuerySilence", "err", err)
-	//if err != nil {
-	//    panic(err.Error())
-	//}
-	defer res.Close()
-	return err
 }
 
 func (f *Fs) mysqlInsert(_query string, args ...interface{}) (err error) {
